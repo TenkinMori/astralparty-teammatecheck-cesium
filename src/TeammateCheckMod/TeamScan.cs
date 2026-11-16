@@ -212,7 +212,7 @@ namespace TeammateCheckMod
             return null;
         }
 
-        private static double Now { get { return DateTime.UtcNow.TimeOfDay.TotalSeconds; } }
+        private static double Now { get { return DateTime.UtcNow.Ticks * 1e-7; } }
 
         private void SendProfile(PlayerHistory history, double now)
         {

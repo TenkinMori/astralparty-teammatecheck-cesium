@@ -121,7 +121,9 @@ namespace TeammateCheckMod
 
         public override void OnUpdate()
         {
-            double now = DateTime.UtcNow.TimeOfDay.TotalSeconds;
+            // 与 TeamScanner.Now 同一时间基准（DateTime.UtcNow.Ticks * 1e-7），
+            // 不能再用 TimeOfDay：那个每天归零，跨午夜会把间隔算成负数。
+            double now = DateTime.UtcNow.Ticks * 1e-7;
             if (now < _nextPoll) return;
             _nextPoll = now + PollSeconds;
 
@@ -152,6 +154,14 @@ namespace TeammateCheckMod
             {
                 Restore();
                 return;
+            }
+
+            if (_appliedCareer != null && career.playerId != _appliedPlayerId)
+            {
+                // 同一份 PlayerCareer 被新玩家的 GetShowPlayerS2C 覆盖了：旧的还原点作废，
+                // 不能把上一个人的开关值写给下一个人。
+                _appliedCareer = null;
+                _appliedPlayerId = 0L;
             }
 
             if (_appliedPlayerId == career.playerId) return;   // 这张名片已经处理过
