@@ -81,7 +81,7 @@ namespace TeammateCheckMod
         private string _panelSignature;
 
         public override string Name { get { return "对队友进行大调查"; } }
-        public override string Version { get { return "1.2.0"; } }
+        public override string Version { get { return "1.2.1"; } }
         public override string Author { get { return "TenkinMori"; } }
         public override string Description
         {

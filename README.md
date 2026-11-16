@@ -44,8 +44,8 @@
   阿强 和 小明 疑似组队
   ```
 
-- **拖动**：按住面板任意位置就能拖，松手后会自动收回屏幕内
-- **点一下面板**：在旁边展开「房间成员」列表，列出本房间所有真人（自己带「（我）」）；
+- **拖动**：按住面板任意位置就能拖，松手后会自动收回屏幕内（位置会一直保留，不会被重新摆回右下角）
+- **点一下面板**：在旁边展开「房间成员」列表（比主面板窄一些），列出本房间所有真人（自己带「（我）」）；
   再点一下收起。点列表里的名字 → 直接打开他的名片（走游戏自己的看名片流程，
   所以隐藏的资料/战绩也会按本模组的效果展开）
 - **F9**：一键隐藏 / 显示**所有**自绘面板（疑似组队 + 成员列表），再按一次恢复。
@@ -138,13 +138,19 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
    （两人任一方向成立即可）；
 5. `累计 ≥ minTogether` 或 `有连场` 的组合判定为疑似组队，按次数降序显示（最多显示 8 行）。
 
-面板是用 FairyGUI 在代码里搭的（照 `ForkDirectionMod` 的做法）：先往 `GRoot` 挂一个
-`sortingOrder = 30000`、不吃点击的全屏 `GComponent` 当图层，图层里再放两个
-`opaque = true, draggable = true` 的子面板（疑似组队、成员列表）。
-必须给图层设 `sortingOrder` —— FairyGUI 的 `GComponent.AddChildAt` 会把排序子对象插到
-所有 0 序号子对象之后，而 `SetChildIndex` 对排序子对象直接 `return`，所以只靠调整子序号
-压不住游戏自己的窗口。子面板必须 `opaque` —— `Container.HitTest_Container` 只在
-`opaque && 内容矩形命中` 时才把触摸算回组件，不 opaque 就只有文字那几行能点能拖。
+面板是用 FairyGUI 在代码里搭的（照 `TownTrainer` 的做法）：两个 `opaque = true, draggable = true`
+的 `GComponent` 直接挂到 `GRoot`，各自带 `sortingOrder = 30000`，所以不会被游戏窗口盖住。
+
+几条踩过的坑，改面板时别踩回去：
+
+- 底板必须 `opaque` —— `Container.HitTest_Container` 只在 `opaque && 内容矩形命中` 时才把触摸算回组件，
+  不 opaque 就只有文字那几行能点、能拖。
+- **不能再套一层 `touchable = false` 的全屏图层** —— `DisplayObject.InternalHitTest` 对不可触摸的对象
+  直接返回 `null`，子对象连试都不试，表现就是「看得见、拖不动、点不动」。
+- 背景 `GGraph` 必须在面板尺寸确定之后画一次（`DrawRoundRect` 内部才 `SetSize`）；尺寸没变就跳过绘制，
+  背景会一直是 0×0，表现就是「面板没背景」。所以布局里先 `SetSize` + `DrawRoundRect`，
+  再用标志位记住初始位置，避免每帧把用户拖出来的位置按回去。
+- 用 `sortingOrder` 而不是 `SetChildIndex` —— FairyGUI 的 `SetChildIndex` 对排序子对象直接 `return`。
 
 几个实现细节：
 
@@ -187,7 +193,7 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 产物：
 
 - `dist/TeammateCheckMod/{TeammateCheckMod.dll,TeammateCheckMod.json,icon.png}`
-- `dist/TeammateCheckMod-1.2.0.zip`
+- `dist/TeammateCheckMod-1.2.1.zip`
 
 `lib/CesiumLoader.SDK.dll` 取自游戏 `AstralParty_ModLoader/sdk`（3.8.1），
 `refs/game` 是当前版本的游戏程序集，仅用于编译引用，不会打进 mod。
@@ -223,6 +229,16 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 - 只处理「看别人的名片」和「当前房间的组队比对」；队伍/结算里的其他展示入口不在本版范围内。
 
 ## 更新日志
+
+### 1.2.1
+
+- 修**面板拖不动、也没有背景**：去掉外层 `touchable = false` 的全屏图层
+  （`DisplayObject.InternalHitTest` 对不可触摸的对象直接返回 `null`，子面板永远收不到触摸），
+  两个面板改为直接挂 `GRoot` 并各自带 `sortingOrder`（照 `TownTrainer` 的做法）
+- 背景 `GGraph` 改为尺寸确定后调 `DrawRoundRect`，不再因为「尺寸没变」跳过绘制而留下 0×0 的空板
+- 面板整体放大：主面板宽度 300 → 440，标题 21 号字、正文 18 号字、行高 26；
+  成员列表 220 → 320 宽，行高 36，圆角底板
+- 拖动后的位置会保留（不再每帧被摆回右下角）
 
 ### 1.2.0
 

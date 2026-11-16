@@ -15,59 +15,75 @@ namespace TeammateCheckMod
 
     /// <summary>
     /// 两套自绘面板：
-    ///   1) 右下角的「疑似组队」小面板：可拖动，点一下展开成员列表；
+    ///   1) 右下角的「疑似组队」面板：可拖动，点一下展开成员列表；
     ///   2) 成员列表面板：列出本房间所有真人，点某个名字就在局内打开他的名片。
     ///
-    /// 全部用 FairyGUI 在代码里搭，照 ForkDirectionMod 的做法：先往 GRoot 上挂一个
-    /// 全屏、自身不吃点击、sortingOrder 很大的 GComponent 当图层，再往图层里加两个
-    /// 可交互的子面板。孩子们自己 touchable=true，所以即使图层不接收点击也能点。
+    /// 两个面板都直接挂在 GRoot 下（照 TownTrainer 的做法：GComponent + opaque + draggable），
+    /// 各自带一个很大的 sortingOrder，所以不会被游戏窗口盖住。
     ///
-    /// 为什么必须给图层设 sortingOrder：FairyGUI 的 GComponent.AddChildAt 里，
-    /// sortingOrder != 0 的子对象会被插入到所有 0 序号子对象之后（即渲染在上层），
-    /// 而之后新加的窗口只会插到 0 号区域里。只靠 SetChildIndex 压不住游戏自己的
-    /// Window（关掉/重开窗口就会重新盖住我们），所以用 sortingOrder 才是稳定的。
+    /// 三条硬性要求，缺一条就「看得见但拖不动」或「干脆看不见」：
+    ///   1) 面板自身 touchable = true 且 opaque = true —— FairyGUI 的
+    ///      Container.HitTest_Container 里只有 `opaque &amp;&amp; _contentRect.Contains(vector)`
+    ///      才会把命中算回组件自身，否则只有文字那几行能点；
+    ///   2) 不能再套一层 touchable = false 的全屏图层 —— DisplayObject.InternalHitTest
+    ///      对不可触摸的对象直接返回 null，子对象连试都不试；
+    ///   3) 背景 GGraph 必须在面板尺寸确定之后画一次（DrawRoundRect 内部会 SetSize），
+    ///      尺寸没变就跳过绘制的话，背景永远是 0×0 的透明块。
     ///
-    /// 为什么面板要 opaque：FairyGUI 的 Container.HitTest_Container 里只有
-    /// `opaque && _contentRect.Contains(vector)` 才会把命中算回组件自身，不 opaque
-    /// 的组件只有文字那几行能点/能拖。
-    ///
-    /// 任何一步失败都只是「没有浮窗」，不影响扫描本身。
+    /// 任何一步失败都只是「没有面板」，不影响扫描本身。
     /// </summary>
     internal sealed class ModPanels
     {
-        private const float PairWidth = 300f;
-        private const float LineHeight = 20f;
-        private const float Margin = 16f;
-        private const float MemberWidth = 220f;
-        private const float RowHeight = 26f;
+        // 右下角主面板
+        private const float PairWidth = 440f;
+        private const float PairPadX = 16f;
+        private const float PairPadY = 12f;
+        private const float PairTitleHeight = 30f;
+        private const float PairLineHeight = 26f;
+        private const int PairTitleSize = 21;
+        private const int PairBodySize = 18;
+
+        // 成员列表
+        private const float MemberWidth = 320f;
+        private const float MemberPadX = 12f;
+        private const float MemberTitleHeight = 34f;
+        private const float MemberRowHeight = 36f;
+        private const float MemberRowGap = 4f;
+        private const int MemberTitleSize = 18;
+        private const int MemberBodySize = 17;
+
+        private const float Margin = 18f;
 
         /// <summary>远大于游戏窗口默认的 0，也大于常见的弹窗图层。</summary>
         private const int SortingOrder = 30000;
 
-        private static readonly Color BorderColor = new Color(0.36f, 0.76f, 1f, 0.55f);
-        private static readonly Color FillColor = new Color(0.03f, 0.06f, 0.11f, 0.86f);
-        private static readonly Color TitleColor = new Color(0.78f, 0.94f, 1f);
-        private static readonly Color BodyColor = new Color(0.93f, 0.96f, 1f);
-        private static readonly Color MutedColor = new Color(0.62f, 0.68f, 0.78f);
-        private static readonly Color RowColor = new Color(0.12f, 0.18f, 0.28f, 0.92f);
-        private static readonly Color SelfColor = new Color(0.55f, 0.85f, 0.6f);
+        private static readonly Color FillColor = new Color(0.04f, 0.07f, 0.12f, 0.92f);
+        private static readonly Color MemberFillColor = new Color(0.05f, 0.09f, 0.15f, 0.94f);
+        private static readonly Color TitleColor = new Color(0.72f, 0.92f, 1f);
+        private static readonly Color BodyColor = new Color(0.95f, 0.97f, 1f);
+        private static readonly Color RowColor = new Color(0.14f, 0.21f, 0.32f, 0.95f);
+        private static readonly Color SelfColor = new Color(0.62f, 0.92f, 0.68f);
+        private static readonly float[] Corners = new float[] { 10f, 10f, 10f, 10f };
 
         private readonly Action<string> _warn;
         private readonly Action<string> _info;
         private readonly Action<long> _onPick;
 
-        private GComponent _layer;
         private GComponent _pairPanel;
         private GGraph _pairBg;
         private GTextField _pairTitle;
         private GTextField _pairBody;
-        private float _pairHeight = 62f;
+        private float _pairHeight = -1f;
+        private bool _pairPlaced;
 
         private GComponent _memberPanel;
         private GGraph _memberBg;
         private GTextField _memberTitle;
         private readonly List<GComponent> _memberRows = new List<GComponent>();
-        private float _memberHeight;
+        private float _memberHeight = -1f;
+        private bool _memberPlaced;
+
+        private Func<List<MemberRow>> _memberProvider;
 
         private bool _failed;
         private bool _wanted = true;       // 快捷键总开关
@@ -87,6 +103,12 @@ namespace TeammateCheckMod
 
         public bool Wanted { get { return _wanted; } }
         public bool MembersOpen { get { return _membersOpen; } }
+
+        /// <summary>点开名单时向外部要一份最新的成员。</summary>
+        public void SetMemberProvider(Func<List<MemberRow>> provider)
+        {
+            _memberProvider = provider;
+        }
 
         /// <summary>快捷键总开关：一次隐藏/显示两套面板。</summary>
         public void SetWanted(bool value)
@@ -124,13 +146,11 @@ namespace TeammateCheckMod
                     _pairSignature = signature;
 
                     _pairTitle.text = title ?? string.Empty;
+                    _pairTitle.SetXY(PairPadX, PairPadY);
                     _pairBody.text = Join(lines);
-                    _pairTitle.SetXY(12f, 7f);
-                    _pairBody.SetSize(PairWidth - 20f, Mathf.Max(1, lines.Count) * LineHeight);
-                    _pairBody.SetXY(12f, 28f);
+                    _pairBody.SetXY(PairPadX, PairPadY + PairTitleHeight);
                 }
 
-                _pairPanel.visible = true;
                 _pairsVisible = true;
                 Apply();
 
@@ -152,8 +172,7 @@ namespace TeammateCheckMod
             {
                 _pairsVisible = false;
                 HideMembers();
-                if (_pairPanel == null) return;
-                _pairPanel.visible = false;
+                Apply();
             }
             catch (Exception e)
             {
@@ -169,18 +188,15 @@ namespace TeammateCheckMod
                 if (!Ensure()) return;
 
                 string signature = RowsSignature(rows);
-                LayoutMember(rows == null ? 0 : rows.Count);
-
                 if (signature != _memberSignature)
                 {
                     _memberSignature = signature;
+                    LayoutMember(rows == null ? 0 : rows.Count);
+                    _memberTitle.text = "房间成员（点名字看名片）";
+                    _memberTitle.SetXY(MemberPadX, 8f);
                     RebuildRows(rows);
                 }
 
-                _memberTitle.text = "房间成员（点名字看名片）";
-                _memberTitle.SetXY(12f, 7f);
-
-                _memberPanel.visible = true;
                 _membersOpen = true;
                 Apply();
             }
@@ -195,8 +211,7 @@ namespace TeammateCheckMod
             try
             {
                 _membersOpen = false;
-                if (_memberPanel == null) return;
-                _memberPanel.visible = false;
+                Apply();
             }
             catch (Exception e)
             {
@@ -214,14 +229,20 @@ namespace TeammateCheckMod
 
         private void Apply()
         {
-            if (_layer == null) return;
-            bool show = _wanted && !_suppressed;
-            _layer.visible = show;
-            if (!show) return;
+            if (_pairPanel == null) return;
 
-            if (_pairPanel != null) _pairPanel.visible = _pairsVisible;
-            if (_memberPanel != null) _memberPanel.visible = _membersOpen;
-            Raise();
+            bool show = _wanted && !_suppressed;
+
+            if (show) Raise(_pairPanel);
+            _pairPanel.visible = show && _pairsVisible;
+
+            if (_memberPanel != null)
+            {
+                if (show) Raise(_memberPanel);
+                _memberPanel.visible = show && _membersOpen;
+            }
+
+            if (!show) return;
             Clamp(_pairPanel);
             Clamp(_memberPanel);
         }
@@ -240,49 +261,36 @@ namespace TeammateCheckMod
             ShowMembers(rows);
         }
 
-        private Func<List<MemberRow>> _memberProvider;
-
-        /// <summary>点开名单时向外部要一份最新的成员。</summary>
-        public void SetMemberProvider(Func<List<MemberRow>> provider)
-        {
-            _memberProvider = provider;
-        }
-
         private bool Ensure()
         {
             if (_failed) return false;
-            if (_layer != null) return true;
+            if (_pairPanel != null) return true;
 
             GRoot root = GRoot.inst;
             if (root == null) return false;
 
-            _layer = new GComponent { name = "TeammateCheckPanel", touchable = false, sortingOrder = SortingOrder };
-            _layer.SetSize(root.width, root.height);
-            root.AddChild(_layer);
-
-            BuildPairPanel();
-            BuildMemberPanel();
-
-            _layer.visible = false;
+            BuildPairPanel(root);
+            BuildMemberPanel(root);
             return true;
         }
 
-        private void BuildPairPanel()
+        private void BuildPairPanel(GRoot root)
         {
             _pairPanel = new GComponent
             {
                 name = "TeammateCheckPairs",
                 opaque = true,
                 touchable = true,
-                draggable = true
+                draggable = true,
+                sortingOrder = SortingOrder
             };
 
             _pairBg = new GGraph { touchable = false };
             _pairTitle = new GTextField { touchable = false, singleLine = true };
             _pairBody = new GTextField { touchable = false, singleLine = false };
 
-            _pairTitle.textFormat = Format(14, TitleColor, true);
-            _pairBody.textFormat = Format(13, BodyColor, false);
+            _pairTitle.textFormat = Format(PairTitleSize, TitleColor, true);
+            _pairBody.textFormat = Format(PairBodySize, BodyColor, false);
             _pairBody.autoSize = AutoSizeType.None;
 
             _pairPanel.AddChild(_pairBg);
@@ -295,23 +303,24 @@ namespace TeammateCheckMod
             _pairPanel.onDragEnd.Add(delegate (EventContext context) { Clamp(_pairPanel); });
             _pairPanel.onClick.Add(delegate (EventContext context) { ApplyPairClick(); });
 
-            _layer.AddChild(_pairPanel);
+            root.AddChild(_pairPanel);
             _pairPanel.visible = false;
         }
 
-        private void BuildMemberPanel()
+        private void BuildMemberPanel(GRoot root)
         {
             _memberPanel = new GComponent
             {
                 name = "TeammateCheckMembers",
                 opaque = true,
                 touchable = true,
-                draggable = true
+                draggable = true,
+                sortingOrder = SortingOrder
             };
 
             _memberBg = new GGraph { touchable = false };
             _memberTitle = new GTextField { touchable = false, singleLine = true };
-            _memberTitle.textFormat = Format(13, TitleColor, true);
+            _memberTitle.textFormat = Format(MemberTitleSize, TitleColor, true);
 
             _memberPanel.AddChild(_memberBg);
             _memberPanel.AddChild(_memberTitle);
@@ -320,7 +329,7 @@ namespace TeammateCheckMod
 
             _memberPanel.onDragEnd.Add(delegate (EventContext context) { Clamp(_memberPanel); });
 
-            _layer.AddChild(_memberPanel);
+            root.AddChild(_memberPanel);
             _memberPanel.visible = false;
         }
 
@@ -329,49 +338,55 @@ namespace TeammateCheckMod
         {
             if (_pairPanel == null) return;
 
-            float height = 32f + Mathf.Max(1, lineCount) * LineHeight + 10f;
+            int count = Mathf.Max(1, lineCount);
+            float height = PairPadY * 2f + PairTitleHeight + count * PairLineHeight;
             if (!Mathf.Approximately(height, _pairHeight))
             {
                 _pairHeight = height;
                 _pairPanel.SetSize(PairWidth, height);
-                _pairBg.DrawRect(PairWidth, height, 1, BorderColor, FillColor);
+                _pairBg.DrawRoundRect(PairWidth, height, FillColor, Corners);
             }
 
-            float left = Mathf.Max(Margin, GRoot.inst.width - Margin - PairWidth);
-            float top = Mathf.Max(Margin, GRoot.inst.height - Margin - height);
-            if (_pairPanel.x <= 0f && _pairPanel.y <= 0f)
+            _pairTitle.SetSize(PairWidth - PairPadX * 2f, PairTitleHeight);
+            _pairBody.SetSize(PairWidth - PairPadX * 2f, count * PairLineHeight);
+
+            if (!_pairPlaced)
             {
-                _pairPanel.SetXY(left, top);
+                _pairPlaced = true;
+                _pairPanel.SetXY(
+                    Mathf.Max(Margin, GRoot.inst.width - Margin - PairWidth),
+                    Mathf.Max(Margin, GRoot.inst.height - Margin - height));
             }
-            Clamp(_pairPanel);
         }
 
-        /// <summary>成员列表压在右下角面板上方；放不下就往下贴。</summary>
+        /// <summary>成员列表默认压在右下角面板上方；放不下就贴屏幕顶部。</summary>
         private void LayoutMember(int rowCount)
         {
             if (_memberPanel == null) return;
 
-            float height = 32f + Mathf.Max(1, rowCount) * RowHeight + 8f;
+            int count = Mathf.Max(1, rowCount);
+            float height = MemberTitleHeight + count * MemberRowHeight + 10f;
             if (!Mathf.Approximately(height, _memberHeight))
             {
                 _memberHeight = height;
                 _memberPanel.SetSize(MemberWidth, height);
-                _memberBg.DrawRect(MemberWidth, height, 1, BorderColor, FillColor);
+                _memberBg.DrawRoundRect(MemberWidth, height, MemberFillColor, Corners);
             }
 
-            float left = Mathf.Max(Margin, GRoot.inst.width - Margin - MemberWidth);
-            float top = Margin;
-            if (_pairPanel != null && _pairPanel.visible)
+            _memberTitle.SetSize(MemberWidth - MemberPadX * 2f, MemberTitleHeight - 8f);
+
+            if (!_memberPlaced)
             {
-                top = _pairPanel.y - Margin - height;
-                if (top < Margin) top = Mathf.Min(GRoot.inst.height - Margin - height, _pairPanel.y + _pairHeight + Margin);
-                if (top < Margin) top = Margin;
-            }
-            if (_memberPanel.x <= 0f && _memberPanel.y <= 0f)
-            {
+                _memberPlaced = true;
+                float left = Mathf.Max(Margin, GRoot.inst.width - Margin - MemberWidth);
+                float top = Margin;
+                if (_pairPanel != null)
+                {
+                    float above = _pairPanel.y - Margin - height;
+                    top = above >= Margin ? above : Mathf.Max(Margin, _pairPanel.y + _pairHeight + Margin);
+                }
                 _memberPanel.SetXY(left, top);
             }
-            Clamp(_memberPanel);
         }
 
         private void RebuildRows(List<MemberRow> rows)
@@ -384,7 +399,8 @@ namespace TeammateCheckMod
 
             if (rows == null) return;
 
-            float y = 30f;
+            float rowWidth = MemberWidth - MemberPadX * 2f;
+            float y = MemberTitleHeight;
             for (int i = 0; i < rows.Count; i++)
             {
                 MemberRow row = rows[i];
@@ -394,19 +410,19 @@ namespace TeammateCheckMod
                     opaque = true,
                     touchable = true
                 };
-                item.SetSize(MemberWidth - 16f, RowHeight - 4f);
-                item.SetXY(8f, y);
+                item.SetSize(rowWidth, MemberRowHeight - MemberRowGap);
+                item.SetXY(MemberPadX, y);
 
                 GGraph bg = new GGraph { touchable = false };
-                bg.DrawRoundRect(MemberWidth - 16f, RowHeight - 4f, RowColor, new float[] { 6f, 6f, 6f, 6f });
+                bg.DrawRoundRect(rowWidth, MemberRowHeight - MemberRowGap, RowColor, Corners);
                 item.AddChild(bg);
 
                 GTextField label = new GTextField { touchable = false, singleLine = true };
-                label.textFormat = Format(13, row.IsSelf ? SelfColor : BodyColor, false);
+                label.textFormat = Format(MemberBodySize, row.IsSelf ? SelfColor : BodyColor, false);
                 label.text = row.Name + (row.IsSelf ? "（我）" : string.Empty);
                 label.autoSize = AutoSizeType.None;
-                label.SetSize(MemberWidth - 32f, RowHeight - 4f);
-                label.SetXY(8f, 0f);
+                label.SetSize(rowWidth - 16f, MemberRowHeight - MemberRowGap);
+                label.SetXY(10f, 0f);
                 label.verticalAlign = VertAlignType.Middle;
                 item.AddChild(label);
 
@@ -415,7 +431,7 @@ namespace TeammateCheckMod
 
                 _memberPanel.AddChild(item);
                 _memberRows.Add(item);
-                y += RowHeight;
+                y += MemberRowHeight;
             }
         }
 
@@ -448,16 +464,16 @@ namespace TeammateCheckMod
             }
         }
 
-        private void Raise()
+        /// <summary>重新挂到 GRoot 末尾，防止被后来添加的图层压住。</summary>
+        private static void Raise(GComponent box)
         {
             GRoot root = GRoot.inst;
-            if (root == null || _layer == null) return;
-            if (_layer.parent != root)
+            if (root == null || box == null) return;
+            if (box.parent != root)
             {
-                if (_layer.parent != null) _layer.RemoveFromParent();
-                root.AddChild(_layer);
+                if (box.parent != null) box.RemoveFromParent();
+                root.AddChild(box);
             }
-            _layer.SetSize(root.width, root.height);
         }
 
         private static string RowsSignature(List<MemberRow> rows)
@@ -478,7 +494,7 @@ namespace TeammateCheckMod
             format.size = size;
             format.color = color;
             format.bold = bold;
-            format.lineSpacing = 3;
+            format.lineSpacing = 4;
             format.font = UIConfig.defaultFont;
             return format;
         }
