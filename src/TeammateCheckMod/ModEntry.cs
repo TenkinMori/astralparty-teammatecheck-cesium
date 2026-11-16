@@ -321,7 +321,7 @@ namespace TeammateCheckMod
             _scanner = new TeamScanner(_maxRecords, Log.Info, Log.Warn);
             _scanner.MinTogether = _minTogether;
             _panelSignature = null;
-            if (_panel == null) _panel = new PairPanel(Log.Warn);
+            if (_panel == null) _panel = new PairPanel(Log.Warn, Log.Info);
         }
 
         private void TickScan(double now)

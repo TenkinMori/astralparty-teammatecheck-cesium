@@ -26,6 +26,7 @@ namespace TeammateCheckMod
         private const int SortingOrder = 30000;
 
         private readonly Action<string> _warn;
+        private readonly Action<string> _info;
 
         private GComponent _layer;
         private GGraph _bg;
@@ -35,10 +36,12 @@ namespace TeammateCheckMod
 
         private bool _failed;
         private bool _visible;
+        private bool _logged;
 
-        public PairPanel(Action<string> warn)
+        public PairPanel(Action<string> warn, Action<string> info)
         {
             _warn = warn;
+            _info = info;
         }
 
         public bool Visible { get { return _visible; } }
@@ -80,7 +83,15 @@ namespace TeammateCheckMod
                 _bg.visible = true;
                 _title.visible = true;
                 _body.visible = true;
+                // 图层本身在 Ensure 里是隐藏的，这里必须显式打开，否则子对象全可见也没用。
+                _layer.visible = true;
                 _visible = true;
+
+                if (!_logged)
+                {
+                    _logged = true;
+                    if (_info != null) _info("浮窗已显示（sortingOrder=" + SortingOrder + "）。");
+                }
 
                 Raise();
             }
