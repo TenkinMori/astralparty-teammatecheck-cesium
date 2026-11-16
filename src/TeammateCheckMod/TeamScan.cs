@@ -283,7 +283,6 @@ namespace TeammateCheckMod
                 history.Next = 0;
                 if (list.Count == 0) history.Done = true;
                 _dirty = true;
-                _info("战绩：" + NameOf(id) + " 近 " + list.Count + " 局可查。");
             });
         }
 

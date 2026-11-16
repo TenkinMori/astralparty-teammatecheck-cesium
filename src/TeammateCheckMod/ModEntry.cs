@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using CesiumLoader.SDK.Configuration;
+using CesiumLoader.SDK.Inputs;
 using CesiumLoader.SDK.Mods;
 using GameLogic;
 using Tools;
 using UI;
+using UnityEngine;
 
 namespace TeammateCheckMod
 {
@@ -62,6 +64,8 @@ namespace TeammateCheckMod
         private bool _showPanel = true;
         private int _minTogether = 3;
         private int _maxRecords = 20;
+        private KeyCode _toggleKey = KeyCode.F9;
+        private bool _toggleHeld;
 
         private double _nextPoll;
         private bool _warnedLayout;
@@ -73,11 +77,11 @@ namespace TeammateCheckMod
         private bool _savedShowFight;
 
         private TeamScanner _scanner;
-        private PairPanel _panel;
+        private ModPanels _panel;
         private string _panelSignature;
 
         public override string Name { get { return "对队友进行大调查"; } }
-        public override string Version { get { return "1.1.0"; } }
+        public override string Version { get { return "1.2.0"; } }
         public override string Author { get { return "TenkinMori"; } }
         public override string Description
         {
@@ -92,7 +96,8 @@ namespace TeammateCheckMod
             Log.Info("配置: enabled=" + _enabled
                 + "，minTogether=" + _minTogether
                 + "，maxRecords=" + _maxRecords
-                + "，showPanel=" + _showPanel);
+                + "，showPanel=" + _showPanel
+                + "，toggleKey=" + _toggleKey);
             Log.Info("字段: 名片窗口=" + (WindowField != null)
                 + "，名片数据=" + (CareerField != null)
                 + "，统计刷新=" + (RefreshStatMethod != null)
@@ -105,22 +110,27 @@ namespace TeammateCheckMod
         {
             ReadConfig(false);
             CreateScanner();
-            if (!_enabled) { Restore(); _panel.Hide(); }
+            if (!_enabled) { Restore(); _panel.HideAll(); }
             Log.Info("配置已更新: enabled=" + _enabled
                 + "，minTogether=" + _minTogether
                 + "，maxRecords=" + _maxRecords
-                + "，showPanel=" + _showPanel);
+                + "，showPanel=" + _showPanel
+                + "，toggleKey=" + _toggleKey);
         }
 
         public override void OnUnload()
         {
             Restore();
-            if (_panel != null) _panel.Hide();
+            if (_panel != null) _panel.HideAll();
             if (_scanner != null) _scanner.ClearLobby();
         }
 
         public override void OnUpdate()
         {
+            // 热键每帧查（不能放进 0.2s 节流里，否则按一下可能整段被跳过）。
+            try { TickHotkey(); }
+            catch (Exception e) { Log.Warn("热键检查失败: " + e.Message); }
+
             // 与 TeamScanner.Now 同一时间基准（DateTime.UtcNow.Ticks * 1e-7），
             // 不能再用 TimeOfDay：那个每天归零，跨午夜会把间隔算成负数。
             double now = DateTime.UtcNow.Ticks * 1e-7;
@@ -132,6 +142,31 @@ namespace TeammateCheckMod
 
             try { TickScan(now); }
             catch (Exception e) { Log.Warn("组队扫描失败: " + e.Message); }
+        }
+
+        /// <summary>
+        /// 快捷键总开关：一次隐藏/显示所有自绘面板（疑似组队 + 成员列表）。
+        /// 用 IsKeyHeld 自己算下降沿，不依赖 IsKeyPressed —— 后者等价 GetKeyDown，
+        /// 掉一帧就丢（ExtremeDifficultyMod 踩过这个坑）。
+        /// </summary>
+        private void TickHotkey()
+        {
+            if (_panel == null) return;
+
+            bool held = _toggleKey != KeyCode.None
+                && InputService.IsAvailable
+                && InputService.IsKeyHeld(_toggleKey);
+            bool edge = held && !_toggleHeld;
+            _toggleHeld = held;
+
+            if (!edge) return;
+            if (InputService.IsKeyboardCaptured) return;   // 正在打字就别抢键
+
+            bool wanted = !_panel.Wanted;
+            _panel.SetWanted(wanted);
+            Log.Info(wanted
+                ? "面板已显示（" + _toggleKey + " 再按一次隐藏）。"
+                : "面板已隐藏（" + _toggleKey + " 再按一次显示）。");
         }
 
         // ---------------------------------------------------------------- 名片
@@ -321,7 +356,13 @@ namespace TeammateCheckMod
             _scanner = new TeamScanner(_maxRecords, Log.Info, Log.Warn);
             _scanner.MinTogether = _minTogether;
             _panelSignature = null;
-            if (_panel == null) _panel = new PairPanel(Log.Warn, Log.Info);
+
+            if (_panel == null)
+            {
+                _panel = new ModPanels(Log.Warn, Log.Info, PickMember);
+                _panel.SetMemberProvider(CollectMembers);
+            }
+            _panel.SetWanted(_showPanel);
         }
 
         private void TickScan(double now)
@@ -329,7 +370,7 @@ namespace TeammateCheckMod
             if (!_enabled)
             {
                 _scanner.ClearLobby();
-                _panel.Hide();
+                _panel.HideAll();
                 return;
             }
 
@@ -337,7 +378,7 @@ namespace TeammateCheckMod
             if (room == null || room.Players == null || room.Players.Count == 0)
             {
                 _scanner.ClearLobby();
-                _panel.Hide();
+                _panel.HideAll();
                 return;
             }
 
@@ -356,12 +397,15 @@ namespace TeammateCheckMod
             if (ids.Count < 2)
             {
                 _scanner.ClearLobby();
-                _panel.Hide();
+                _panel.HidePairs();
                 return;
             }
 
             _scanner.SetLobby(ids, names);
             _scanner.Tick(now, CardWindowOpen());
+
+            // 名片窗口开着时先让开，关掉再回来。
+            _panel.SetSuppressed(CardWindowOpen());
 
             if (!_scanner.IsDirty) return;
             _scanner.MarkClean();
@@ -389,43 +433,111 @@ namespace TeammateCheckMod
             List<string> lines = new List<string>();
             for (int i = 0; i < pairs.Count && i < 8; i++)
             {
-                PairCount pair = pairs[i];
-                string line = StripTags(pair.NameA) + " ↔ " + StripTags(pair.NameB) + "   " + pair.Count + " 次";
-                if (pair.Consecutive) line += "（含连场）";
-                lines.Add(line);
+                lines.Add(StripTags(pairs[i].NameA) + " 和 " + StripTags(pairs[i].NameB) + " 疑似组队");
             }
 
-            string footer = "已扫描 " + _scanner.ScannedPlayers + "/" + _scanner.LobbyCount
-                + " 人 · 命中 " + _scanner.MatchCount + " 场";
-
-            string signature = string.Join("|", lines) + "#" + footer;
+            string signature = string.Join("|", lines);
             if (signature == _panelSignature) return;
             _panelSignature = signature;
 
-            if (!_showPanel)
-            {
-                _panel.Hide();
-                return;
-            }
-
             bool complete = _scanner.ScannedPlayers >= _scanner.LobbyCount;
-            string placeholder = complete
-                ? "近 " + _maxRecords + " 局里没有重复同场（阈值 " + _minTogether + " 次）。"
-                : "扫描中…（每人 1 次名片查询 + 最多 " + _maxRecords + " 次战绩详情）";
 
-            _panel.Show("疑似组队 · 近 " + _maxRecords + " 局同场（含本局）", lines, placeholder, footer);
-
-            // 扫描过程中结果会一局一局往上加，只在扫完时落一次日志，避免刷屏。
-            if (!complete) return;
-            if (lines.Count > 0)
+            if (!_showPanel || lines.Count == 0)
             {
-                for (int i = 0; i < lines.Count; i++) Log.Info("疑似组队：" + lines[i]);
+                _panel.HidePairs();
             }
             else
             {
-                Log.Info("组队统计：当前房间 " + _scanner.LobbyCount + " 人，近 " + _maxRecords
-                    + " 局里同场次数（含本局）均未达到 " + _minTogether + " 次，也没有连场。");
+                _panel.ShowPairs("疑似组队", lines);
             }
+
+            // 成员列表内容变了（换人 / 名单变）就同步刷新。
+            List<MemberRow> members = CollectMembers();
+            if (_panel.MembersOpen) _panel.ShowMembers(members);
+
+            // 只在扫完时落一次日志，避免刷屏。
+            if (!complete) return;
+            for (int i = 0; i < lines.Count; i++) Log.Info(lines[i]);
+        }
+
+        /// <summary>当前房间的真人名单（供成员列表面板用）。</summary>
+        private List<MemberRow> CollectMembers()
+        {
+            List<MemberRow> rows = new List<MemberRow>();
+            RoomInfo room = GetRoom();
+            if (room == null || room.Players == null) return rows;
+
+            for (int i = 0; i < room.Players.Count; i++)
+            {
+                RoomPlayer player = room.Players[i];
+                if (player == null || player.serverPlayer == null) continue;
+                if (player.IsBot) continue;
+                if (player.Id <= 100000L) continue;
+
+                MemberRow row = new MemberRow();
+                row.Id = player.Id;
+                row.Name = StripTags(player.GetNick());
+                row.IsSelf = IsSelf(player.Id);
+                rows.Add(row);
+            }
+            return rows;
+        }
+
+        /// <summary>点了成员列表里的一行：走游戏自己的看名片路径（会弹出名片窗口）。</summary>
+        private void PickMember(long playerId)
+        {
+            if (playerId == 0L) return;
+
+            RoomPlayer player = FindPlayer(playerId);
+            if (player == null)
+            {
+                Log.Warn("房间成员已不在：id=" + playerId);
+                return;
+            }
+
+            try
+            {
+                GameLogicManager logic = SimpleSingletonProvider<GameLogicManager>.inst;
+                if (logic == null || logic.account == null) return;
+
+                // 看自己时游戏约定传 0（UICom_RoomPlayer.ShowAccountInfo 的写法）。
+                long id = IsSelf(playerId) ? 0L : playerId;
+                string nick = player.GetNick();
+                int level = player.Level;
+                string headIcon = SafeHead(player);
+                (string, bool) labelData = SafeBackground(player);
+
+                logic.account.RequestGetShowPlayerC2S(id, nick, level, headIcon, labelData, null);
+                Log.Info("正在查看名片：" + StripTags(nick));
+            }
+            catch (Exception e)
+            {
+                Log.Warn("打开名片失败: " + e.Message);
+            }
+        }
+
+        private static RoomPlayer FindPlayer(long playerId)
+        {
+            RoomInfo room = GetRoom();
+            if (room == null || room.Players == null) return null;
+            for (int i = 0; i < room.Players.Count; i++)
+            {
+                RoomPlayer player = room.Players[i];
+                if (player != null && player.Id == playerId) return player;
+            }
+            return null;
+        }
+
+        private static string SafeHead(RoomPlayer player)
+        {
+            try { return player.HeadURL() ?? string.Empty; }
+            catch { return string.Empty; }
+        }
+
+        private static (string, bool) SafeBackground(RoomPlayer player)
+        {
+            try { return player.AccountBackgroundURL(); }
+            catch { return (string.Empty, false); }
         }
 
         /// <summary>房间昵称常带 UBB 标记（[size=54][color=#E75480]…），浮窗里要剥掉。</summary>
@@ -458,6 +570,7 @@ namespace TeammateCheckMod
                 cfg.Set("minTogether", 3);
                 cfg.Set("maxRecords", 20);
                 cfg.Set("showPanel", true);
+                cfg.Set("toggleKey", "F9");
                 cfg.SaveIfDirty();
             }
 
@@ -465,6 +578,8 @@ namespace TeammateCheckMod
             _showPanel = cfg.GetBool("showPanel", true);
             _minTogether = Math.Max(2, Math.Min(20, cfg.GetInt("minTogether", 3)));
             _maxRecords = Math.Max(1, Math.Min(30, cfg.GetInt("maxRecords", 20)));
+            _toggleKey = ParseKey(cfg.GetString("toggleKey", "F9"), KeyCode.F9);
+            _toggleHeld = false;
         }
 
         private void WarnLayout()
@@ -473,6 +588,16 @@ namespace TeammateCheckMod
             _warnedLayout = true;
             Log.Warn("游戏程序集布局变了（找不到名片窗口/名片数据的字段或刷新方法），本模组不会生效；"
                 + "需要按新版本重新确认字段名与私有方法名。");
+        }
+
+        /// <summary>配置里的键名按 KeyCode 解析，写错就退回默认键。</summary>
+        private static KeyCode ParseKey(string name, KeyCode fallback)
+        {
+            if (string.IsNullOrEmpty(name)) return fallback;
+
+            KeyCode key;
+            if (Enum.TryParse(name.Trim(), true, out key) && key != KeyCode.None) return key;
+            return fallback;
         }
     }
 }

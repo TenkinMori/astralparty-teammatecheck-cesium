@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$ver = '1.1.0'
+$ver = '1.2.0'
 
 dotnet build "$root\src\TeammateCheckMod" -c Release -v q --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet build 失败" }
