@@ -384,22 +384,19 @@ namespace TeammateCheckMod
                     long b = _lobby[j];
 
                     int history = 0;
-                    bool consecutive = false;
-                    bool prevBoth = false;
                     for (int k = 0; k < ordered.Count; k++)
                     {
                         MatchEntry entry = ordered[k];
-                        bool both = entry.Players.ContainsKey(a) && entry.Players.ContainsKey(b);
-                        if (both)
-                        {
-                            history++;
-                            if (prevBoth) consecutive = true;
-                        }
-                        prevBoth = both;
+                        if (entry.Players.ContainsKey(a) && entry.Players.ContainsKey(b)) history++;
                     }
 
-                    bool inCurrent = _current != null && _current.Players.ContainsKey(a) && _current.Players.ContainsKey(b);
+                    bool inCurrent = IsTogetherInCurrent(a, b);
                     int count = history + (inCurrent ? 1 : 0);
+
+                    // 「连续两局同场」按当事人自己的战绩顺序判，而不是全局时间序：
+                    // 全局序里夹着别人的局，会漏判；各自的列表里相邻两局都同场才算连场。
+                    bool consecutive = AdjacentInHistory(a, b) || AdjacentInHistory(b, a);
+                    if (!consecutive && inCurrent) consecutive = TogetherInLastGame(a, b);
 
                     if (count < MinTogether && !consecutive) continue;
 
@@ -417,6 +414,51 @@ namespace TeammateCheckMod
             }
             result.Sort(delegate(PairCount x, PairCount y) { return y.Count.CompareTo(x.Count); });
             return result;
+        }
+
+        private bool IsTogetherInCurrent(long a, long b)
+        {
+            return _current != null && _current.Players.ContainsKey(a) && _current.Players.ContainsKey(b);
+        }
+
+        /// <summary>某个玩家自己战绩里相邻的两局，是否都同时有对方。</summary>
+        private bool AdjacentInHistory(long self, long other)
+        {
+            PlayerHistory history;
+            if (!_histories.TryGetValue(self, out history)) return false;
+            if (history.Records == null || history.Records.Count < 2) return false;
+
+            // career.Records 是按时间降序的，所以从末尾往前就是时间顺序。
+            for (int i = history.Records.Count - 1; i > 0; i--)
+            {
+                MatchEntry later, earlier;
+                if (!_matches.TryGetValue(KeyOf(history.Records[i]), out later)) continue;
+                if (!_matches.TryGetValue(KeyOf(history.Records[i - 1]), out earlier)) continue;
+                if (later.Players.ContainsKey(other) && earlier.Players.ContainsKey(other)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>两人各自「最近一局」里就有对方，而现在这一局又同场 ⇒ 也是连场。</summary>
+        private bool TogetherInLastGame(long a, long b)
+        {
+            return LastGameHas(a, b) || LastGameHas(b, a);
+        }
+
+        private bool LastGameHas(long self, long other)
+        {
+            PlayerHistory history;
+            if (!_histories.TryGetValue(self, out history)) return false;
+            if (history.Records == null || history.Records.Count == 0) return false;
+
+            MatchEntry last;
+            if (!_matches.TryGetValue(KeyOf(history.Records[0]), out last)) return false;
+            return last.Players.ContainsKey(self) && last.Players.ContainsKey(other);
+        }
+
+        private static string KeyOf(ShortRecord rec)
+        {
+            return rec.Time + ":" + rec.MapType;
         }
 
         public void MarkClean()
