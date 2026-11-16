@@ -161,14 +161,18 @@ namespace TeammateCheckMod
             }
 
             if (now < _nextRequestAt) return;
-            if (_finished) return;
 
             PlayerHistory history = PickNext();
             if (history == null)
             {
-                _finished = true;
-                _dirty = true;
-                _info("扫描完成：本人群 " + _lobby.Count + " 人，命中 " + _matches.Count + " 场对局记录。");
+                // 全部扫完。这里不能直接 return 掉了事——缓存过期的玩家要能被 PickNext
+                // 重新捡起来重扫，所以只把「完成」这件事记一次日志。
+                if (!_finished)
+                {
+                    _finished = true;
+                    _dirty = true;
+                    _info("扫描完成：本人群 " + _lobby.Count + " 人，命中 " + _matches.Count + " 场对局记录。");
+                }
                 return;
             }
 
