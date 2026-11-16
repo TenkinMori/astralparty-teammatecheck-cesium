@@ -60,7 +60,7 @@ namespace TeammateCheckMod
 
         private bool _enabled = true;
         private bool _showPanel = true;
-        private int _minTogether = 4;
+        private int _minTogether = 3;
         private int _maxRecords = 20;
 
         private double _nextPoll;
@@ -389,7 +389,10 @@ namespace TeammateCheckMod
             List<string> lines = new List<string>();
             for (int i = 0; i < pairs.Count && i < 8; i++)
             {
-                lines.Add(pairs[i].NameA + " ↔ " + pairs[i].NameB + "   " + pairs[i].Count + " 次");
+                PairCount pair = pairs[i];
+                string line = StripTags(pair.NameA) + " ↔ " + StripTags(pair.NameB) + "   " + pair.Count + " 次";
+                if (pair.Consecutive) line += "（含连场）";
+                lines.Add(line);
             }
 
             string footer = "已扫描 " + _scanner.ScannedPlayers + "/" + _scanner.LobbyCount
@@ -410,17 +413,36 @@ namespace TeammateCheckMod
                 ? "近 " + _maxRecords + " 局里没有重复同场（阈值 " + _minTogether + " 次）。"
                 : "扫描中…（每人 1 次名片查询 + 最多 " + _maxRecords + " 次战绩详情）";
 
-            _panel.Show("疑似组队 · 近 " + _maxRecords + " 局同场", lines, placeholder, footer);
+            _panel.Show("疑似组队 · 近 " + _maxRecords + " 局同场（含本局）", lines, placeholder, footer);
 
+            // 扫描过程中结果会一局一局往上加，只在扫完时落一次日志，避免刷屏。
+            if (!complete) return;
             if (lines.Count > 0)
             {
                 for (int i = 0; i < lines.Count; i++) Log.Info("疑似组队：" + lines[i]);
             }
-            else if (complete)
+            else
             {
                 Log.Info("组队统计：当前房间 " + _scanner.LobbyCount + " 人，近 " + _maxRecords
-                    + " 局里同场次数均未达到 " + _minTogether + " 次。");
+                    + " 局里同场次数（含本局）均未达到 " + _minTogether + " 次，也没有连场。");
             }
+        }
+
+        /// <summary>房间昵称常带 UBB 标记（[size=54][color=#E75480]…），浮窗里要剥掉。</summary>
+        private static string StripTags(string text)
+        {
+            if (string.IsNullOrEmpty(text) || text.IndexOf('[') < 0) return text;
+
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(text.Length);
+            bool inTag = false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (c == '[') { inTag = true; continue; }
+                if (c == ']') { inTag = false; continue; }
+                if (!inTag) sb.Append(c);
+            }
+            return sb.ToString();
         }
 
         // ---------------------------------------------------------------- 配置
@@ -433,7 +455,7 @@ namespace TeammateCheckMod
             if (writeDefaults && cfg.Count == 0)
             {
                 cfg.Set("enabled", true);
-                cfg.Set("minTogether", 4);
+                cfg.Set("minTogether", 3);
                 cfg.Set("maxRecords", 20);
                 cfg.Set("showPanel", true);
                 cfg.SaveIfDirty();
@@ -441,7 +463,7 @@ namespace TeammateCheckMod
 
             _enabled = cfg.GetBool("enabled", true);
             _showPanel = cfg.GetBool("showPanel", true);
-            _minTogether = Math.Max(2, Math.Min(20, cfg.GetInt("minTogether", 4)));
+            _minTogether = Math.Max(2, Math.Min(20, cfg.GetInt("minTogether", 3)));
             _maxRecords = Math.Max(1, Math.Min(30, cfg.GetInt("maxRecords", 20)));
         }
 

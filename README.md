@@ -11,7 +11,8 @@
 两件事，都在你自己的客户端里完成，不改服务端数据、也不伪造内容：
 
 1. **撕掉名片的遮挡**：对手勾了「隐藏资料」「隐藏战绩」时，照常显示他的统计数据与对局记录。
-2. **开局查组队**：进房间后静默把同房间每个人的近期战绩过一遍，找出「近 20 局里一起玩过 ≥4 次」的组合，
+2. **开局查组队**：进房间后静默把同房间每个人的近期战绩过一遍，统计两两同场次数
+   （**本局算一次**），累计 ≥3 次、或者出现过**连续两局**同场，就判为疑似组队，
    在局内左下角弹出小浮窗，同时写进日志。
 
 - 自己的名片不动：你自己的「隐藏」开关照常生效，别人仍然看不到你隐藏的东西
@@ -38,19 +39,20 @@
 - 进入房间（含联机房间）后：左下角浮窗显示「疑似组队」名单，形如
 
   ```
-  疑似组队 · 近 20 局同场
+  疑似组队 · 近 20 局同场（含本局）
   小明 ↔ 小红   6 次
-  阿强 ↔ 小明   4 次
+  阿强 ↔ 小明   3 次（含连场）
   已扫描 4/4 人 · 命中 12 场
   ```
 
-  正在扫时脚注变成进度，扫完没有命中则显示「近 20 局里没有重复同场」。
+  正在扫时脚注变成进度，扫完没有命中则显示「近 20 局里没有重复同场（阈值 3 次）」。
+  `（含连场）` 表示这两人有连续两局同场。
 - 配置文件 `AstralParty_ModLoader/configs/TeammateCheckMod.json`（首次启动自动生成）：
 
   ```json
   {
     "enabled": true,
-    "minTogether": 4,
+    "minTogether": 3,
     "maxRecords": 20,
     "showPanel": true
   }
@@ -59,7 +61,7 @@
   | 键 | 默认 | 说明 |
   | --- | --- | --- |
   | `enabled` | `true` | 总开关 |
-  | `minTogether` | `4` | 近 N 局里同场多少次算疑似组队（>3 次） |
+  | `minTogether` | `3` | 同场累计多少次（本局也算一次）算疑似组队；连续两局同场不受此值限制 |
   | `maxRecords` | `20` | 每人往回查多少局 |
   | `showPanel` | `true` | 是否显示局内浮窗（关掉后只写日志） |
 
@@ -124,8 +126,15 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
    `maxRecords` 局的 `Index`；
 2. 逐条发 5155（间隔 0.12 s），把这一局的参与者 UID 收进「对局表」，
    键是 `Time + MapType`，同一局从不同人嘴里查出来会自然合并；
-3. 对房间里的人两两统计：有多少场对局的参与者同时包含这两个 UID；
-4. `≥ minTogether` 的组合判定为疑似组队，按次数降序显示。
+3. 对房间里的人两两统计：有多少场对局的参与者同时包含这两个 UID，**再加上本局**这一次；
+   若其中出现过连续两局都同场，单独打上连场标记；
+4. `累计 ≥ minTogether` 或 `有连场` 的组合判定为疑似组队，按次数降序显示（最多显示 8 行）。
+
+浮窗是用 FairyGUI 在代码里搭的（照 `ForkDirectionMod` 的做法）：先往 `GRoot` 挂一个
+`sortingOrder = 30000`、不吃点击的全屏 `GComponent` 当图层，底板与三行文字都挂在这个图层里。
+必须给图层设 `sortingOrder` —— FairyGUI 的 `GComponent.AddChildAt` 会把排序子对象插到
+所有 0 序号子对象之后，而 `SetChildIndex` 对排序子对象直接 `return`，所以只靠调整子序号
+压不住游戏自己的窗口。
 
 几个实现细节：
 
@@ -144,7 +153,7 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 
 ## 验证
 
-- 启动日志：`配置: enabled=True，minTogether=4，maxRecords=20，showPanel=True`
+- 启动日志：`配置: enabled=True，minTogether=3，maxRecords=20，showPanel=True`
   以及 `字段: 名片窗口=True，名片数据=True，统计刷新=True，战绩刷新=True`
 - 打开一个隐藏了资料的玩家名片：`名片：已强制展开对方隐藏内容（统计=有，战绩=N 条，刷新=True/True）`
 - 关掉名片：`名片已关闭：隐藏开关已还原。`
@@ -204,9 +213,11 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 ### 1.1.0
 
 - 新增「开局组队检测」：静默扫描当前房间每人的近期战绩，两两统计同场次数，
-  ≥ `minTogether`（默认 4）次判疑似组队，结果写进局内左下角浮窗与日志
+  累计（含本局）≥ `minTogether`（默认 3）次、或有连续两局同场即判疑似组队，
+  结果写进局内左下角浮窗与日志
 - 新增配置 `minTogether` / `maxRecords` / `showPanel`
 - 查询走裸 5154 + `RequestGetPlayerFightRecordC2S`，不弹名片窗口；每位玩家缓存 30 分钟
+- 浮窗改为 `sortingOrder = 30000` 的独立图层，不再被游戏窗口盖住；昵称里的 UBB 标记会剥掉
 
 ### 1.0.0
 

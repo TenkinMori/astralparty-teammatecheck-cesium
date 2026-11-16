@@ -25,6 +25,9 @@ namespace TeammateCheckMod
         public readonly int MapType;
         public readonly Dictionary<long, string> Players = new Dictionary<long, string>();
 
+        /// <summary>true = 当前这一局（房间里的人自动算同场），排序时永远放在最后。</summary>
+        public bool Current;
+
         public MatchEntry(long time, int mapType)
         {
             Time = time;
@@ -51,7 +54,9 @@ namespace TeammateCheckMod
         public long B;
         public string NameA;
         public string NameB;
-        public int Count;
+        public int Count;          // 含本局
+        public int HistoryCount;   // 只算历史对局
+        public bool Consecutive;   // 有连续两局同场
     }
 
     /// <summary>
@@ -80,13 +85,16 @@ namespace TeammateCheckMod
         private readonly List<long> _lobby = new List<long>();
         private readonly Dictionary<long, string> _lobbyNames = new Dictionary<long, string>();
 
+        /// <summary>当前这一局：房间里的人此刻就同场。不放进 _matches，免得被当成真记录。</summary>
+        private MatchEntry _current;
+
         private double _nextRequestAt;
         private double _pendingAt;
         private bool _pending;
         private bool _dirty = true;
         private bool _finished;
 
-        public int MinTogether = 4;
+        public int MinTogether = 3;
 
         public TeamScanner(int maxRecords, Action<string> info, Action<string> warn)
         {
@@ -135,6 +143,13 @@ namespace TeammateCheckMod
                 _lobby.Add(ids[i]);
                 _lobbyNames[ids[i]] = (names != null && i < names.Count) ? names[i] : ids[i].ToString();
             }
+
+            // 本局本身就算一次同场：房间里的人此刻都在打同一局。
+            MatchEntry current = new MatchEntry(DateTime.UtcNow.Ticks, 0);
+            current.Current = true;
+            for (int i = 0; i < _lobby.Count; i++) current.Players[_lobby[i]] = NameOf(_lobby[i]);
+            _current = current;
+
             _finished = false;
             _dirty = true;
         }
@@ -144,6 +159,7 @@ namespace TeammateCheckMod
             if (_lobby.Count == 0) return;
             _lobby.Clear();
             _lobbyNames.Clear();
+            _current = null;
             _finished = false;
             _dirty = true;
         }
@@ -347,9 +363,18 @@ namespace TeammateCheckMod
             return _lobbyNames.TryGetValue(id, out name) ? name : id.ToString();
         }
 
-        /// <summary>当前名单里两两同场次数 ≥ MinTogether 的组合，按次数降序。</summary>
+        /// <summary>
+        /// 当前名单里判为疑似组队的组合，按次数降序。
+        ///
+        /// 判定：近 N 局同场次数（**含本局**）≥ MinTogether，或者有连续两局同场。
+        /// 本局单独记在 _current 里，不混进 _matches，避免它被当成历史记录参与「连场」判断，
+        /// 也避免缓存过期重扫时把本局算两遍。
+        /// </summary>
         public List<PairCount> Pairs()
         {
+            List<MatchEntry> ordered = new List<MatchEntry>(_matches.Values);
+            ordered.Sort(delegate(MatchEntry x, MatchEntry y) { return x.Time.CompareTo(y.Time); });
+
             List<PairCount> result = new List<PairCount>();
             for (int i = 0; i < _lobby.Count; i++)
             {
@@ -357,15 +382,37 @@ namespace TeammateCheckMod
                 {
                     long a = _lobby[i];
                     long b = _lobby[j];
-                    int count = 0;
-                    foreach (MatchEntry entry in _matches.Values)
+
+                    int history = 0;
+                    bool consecutive = false;
+                    bool prevBoth = false;
+                    for (int k = 0; k < ordered.Count; k++)
                     {
-                        if (entry.Players.ContainsKey(a) && entry.Players.ContainsKey(b)) count++;
+                        MatchEntry entry = ordered[k];
+                        bool both = entry.Players.ContainsKey(a) && entry.Players.ContainsKey(b);
+                        if (both)
+                        {
+                            history++;
+                            if (prevBoth) consecutive = true;
+                        }
+                        prevBoth = both;
                     }
-                    if (count >= MinTogether)
+
+                    bool inCurrent = _current != null && _current.Players.ContainsKey(a) && _current.Players.ContainsKey(b);
+                    int count = history + (inCurrent ? 1 : 0);
+
+                    if (count < MinTogether && !consecutive) continue;
+
+                    result.Add(new PairCount
                     {
-                        result.Add(new PairCount { A = a, B = b, NameA = NameOf(a), NameB = NameOf(b), Count = count });
-                    }
+                        A = a,
+                        B = b,
+                        NameA = NameOf(a),
+                        NameB = NameOf(b),
+                        Count = count,
+                        HistoryCount = history,
+                        Consecutive = consecutive
+                    });
                 }
             }
             result.Sort(delegate(PairCount x, PairCount y) { return y.Count.CompareTo(x.Count); });

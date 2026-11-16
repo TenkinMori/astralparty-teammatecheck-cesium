@@ -8,8 +8,13 @@ namespace TeammateCheckMod
     /// <summary>
     /// 局内左下角的小浮窗：列出「疑似组队」的两两组合。
     ///
-    /// 全部用 FairyGUI 在代码里搭（面板资源在包里不好挂），照 HomeBackgroundMod 的做法
-    /// 直接往 GRoot 上加几个不吃点击的 GObject：半透明底板 + 标题 + 正文 + 脚注。
+    /// 全部用 FairyGUI 在代码里搭，照 ForkDirectionMod 的做法：先往 GRoot 上挂一个
+    /// 全屏、不吃点击、sortingOrder 很大的 GComponent 当图层，再往图层里加底板和文字。
+    ///
+    /// 为什么必须给图层设 sortingOrder：FairyGUI 的 GComponent.AddChildAt 里，
+    /// sortingOrder != 0 的子对象会被插入到所有 0 序号子对象之后（即渲染在上层），
+    /// 而之后新加的窗口只会插到 0 号区域里。只靠 SetChildIndex 压不住游戏自己的
+    /// Window（关掉/重开窗口就会重新盖住我们），所以用 sortingOrder 才是稳定的。
     /// 任何一步失败都只是「没有浮窗」，不影响扫描本身。
     /// </summary>
     internal sealed class PairPanel
@@ -17,14 +22,17 @@ namespace TeammateCheckMod
         private const float Width = 340f;
         private const float LineHeight = 20f;
 
+        /// <summary>远大于游戏窗口默认的 0，也大于常见的弹窗图层。</summary>
+        private const int SortingOrder = 30000;
+
         private readonly Action<string> _warn;
 
+        private GComponent _layer;
         private GGraph _bg;
         private GTextField _title;
         private GTextField _body;
         private GTextField _footer;
 
-        private bool _attached;
         private bool _failed;
         private bool _visible;
 
@@ -64,15 +72,16 @@ namespace TeammateCheckMod
                 _body.SetSize(Width - 24f, bodyHeight);
                 _body.SetXY(26f, top + 32f);
 
-                if (!string.IsNullOrEmpty(footer))
-                {
-                    _footer.text = footer;
-                    _footer.SetSize(Width - 24f, LineHeight);
-                    _footer.SetXY(26f, top + 32f + bodyHeight + 2f);
-                }
-
+                _footer.text = footer ?? string.Empty;
+                _footer.SetSize(Width - 24f, LineHeight);
+                _footer.SetXY(26f, top + 32f + bodyHeight + 2f);
                 _footer.visible = !string.IsNullOrEmpty(footer);
-                SetVisible(true);
+
+                _bg.visible = true;
+                _title.visible = true;
+                _body.visible = true;
+                _visible = true;
+
                 Raise();
             }
             catch (Exception e)
@@ -86,11 +95,8 @@ namespace TeammateCheckMod
             try
             {
                 _visible = false;
-                if (!_attached) return;
-                _bg.visible = false;
-                _title.visible = false;
-                _body.visible = false;
-                _footer.visible = false;
+                if (_layer == null) return;
+                _layer.visible = false;
             }
             catch (Exception e)
             {
@@ -98,72 +104,49 @@ namespace TeammateCheckMod
             }
         }
 
-        private void SetVisible(bool visible)
-        {
-            _bg.visible = visible;
-            _title.visible = visible;
-            _body.visible = visible;
-            _visible = visible;
-        }
-
-        /// <summary>压到最上层；只在内容变化/重新出现时调，避免一直盖住对话框。</summary>
+        /// <summary>重挂到 GRoot 末尾（窗口被重建时火层可能被挤下去）。</summary>
         private void Raise()
         {
             GRoot root = GRoot.inst;
-            if (root == null) return;
-
-            GObject[] objects = new GObject[] { _bg, _title, _body, _footer };
-            int last = root.numChildren - 1;
-            if (last < 0) return;
-
-            int start = Mathf.Max(0, last - objects.Length + 1);
-            for (int i = 0; i < objects.Length; i++)
+            if (root == null || _layer == null) return;
+            if (_layer.parent != root)
             {
-                if (objects[i] == null) continue;
-                root.SetChildIndex(objects[i], start + i);
+                if (_layer.parent != null) _layer.RemoveFromParent();
+                root.AddChild(_layer);
             }
+            _layer.SetSize(root.width, root.height);
         }
 
         private bool Ensure()
         {
             if (_failed) return false;
-            if (_attached) return true;
+            if (_layer != null) return true;
 
             GRoot root = GRoot.inst;
             if (root == null) return false;
 
-            _bg = new GGraph();
-            _title = new GTextField();
-            _body = new GTextField();
-            _footer = new GTextField();
+            _layer = new GComponent { name = "TeammateCheckPanel", touchable = false, sortingOrder = SortingOrder };
 
-            root.AddChild(_bg);
-            root.AddChild(_title);
-            root.AddChild(_body);
-            root.AddChild(_footer);
-
-            _bg.touchable = false;
-            _title.touchable = false;
-            _body.touchable = false;
-            _footer.touchable = false;
+            _bg = new GGraph { touchable = false };
+            _title = new GTextField { touchable = false, singleLine = true };
+            _body = new GTextField { touchable = false, singleLine = false };
+            _footer = new GTextField { touchable = false, singleLine = true };
 
             _title.textFormat = Format(15, new Color(0.78f, 0.94f, 1f), true);
             _body.textFormat = Format(13, new Color(0.93f, 0.96f, 1f), false);
             _footer.textFormat = Format(12, new Color(0.66f, 0.76f, 0.86f), false);
 
-            _title.singleLine = true;
-            _body.singleLine = false;
-            _footer.singleLine = true;
-
             _body.autoSize = AutoSizeType.None;
             _footer.autoSize = AutoSizeType.None;
 
-            _attached = true;
+            _layer.AddChild(_bg);
+            _layer.AddChild(_title);
+            _layer.AddChild(_body);
+            _layer.AddChild(_footer);
 
-            _bg.visible = false;
-            _title.visible = false;
-            _body.visible = false;
-            _footer.visible = false;
+            _layer.visible = false;
+            root.AddChild(_layer);
+            _layer.SetSize(root.width, root.height);
             return true;
         }
 
