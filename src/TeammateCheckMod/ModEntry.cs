@@ -20,19 +20,23 @@ namespace TeammateCheckMod
     /// <summary>
     /// 对队友进行大调查（CesiumLoader 版）。
     ///
+    /// 第一件事：解除名片的「隐藏」。
     /// 游戏里「隐藏资料 / 隐藏战绩」是账号上的两个开关（ShowPlayer.IsShowData、
     /// ShowPlayer.IsShowFight），由服务端保存；别人打开你的名片时，服务端仍然把
     /// 整份 ShowPlayerInfo（含统计与战绩列表）发给客户端，客户端在
     /// UI.AccountInfoWindow 里按 IsSelf || isShowX 决定要不要渲染，隐藏时只显示
-    /// 一句「对方已隐藏」的提示。
+    /// 一句「对方已隐藏」的提示。本模组不改游戏文件、也不伪造数据：只在打开别人的
+    /// 名片时把 PlayerCareer.isShowData / isShowFight 临时置为 true 并重刷界面，
+    /// 关掉后按原值还原。自己的名片（IsSelf）一律不碰。
     ///
-    /// 本模组不改游戏文件、也不伪造数据：只在打开别人的名片时，把
-    /// PlayerCareer.isShowData / isShowFight 临时置为 true 并重刷界面，让本地把
-    /// 已经收到的数据画出来；名片关掉后按原值还原。如果服务端确实没下发数据
-    /// （statistics 为 null、Records 为 null），这里也不会凭空造出内容，只在日志里
-    /// 记一条 —— 这条日志正好能实测服务端有没有裁剪。
-    ///
-    /// 自己的名片（IsSelf）一律不碰，保证「隐藏」开关仍然照常工作。
+    /// 第二件事：开局查「谁和谁常一起玩」。
+    /// 5154（看名片）返回的 Record[] 只有名次/英雄，没有队友；同场玩家的 UID 在
+    /// 5155（单场详情）的 PlayerFightData.PlayerId 里。所以对当前房间每个人各查
+    /// 一次名片拿最近 N 局的 Index，再逐局查详情，按「同一局（Time+MapType）」把
+    /// 参与者归并起来，最后两两统计同场次数：近 N 局里同场 ≥ minTogether 次即判
+    /// 疑似组队，结果画在局内左下角的小浮窗里，同时写进日志。
+    /// 查询走裸 RPC / AccountLogic.RequestGetPlayerFightRecordC2S，不会弹名片窗口；
+    /// 每个玩家的结果缓存 30 分钟，换一局只补查新面孔。
     /// </summary>
     public sealed class TeammateCheckController : ModBase
     {
@@ -55,6 +59,10 @@ namespace TeammateCheckMod
             typeof(AccountInfoWindow).GetMethod("RefreshFightRecord", BindingFlags.Instance | BindingFlags.NonPublic);
 
         private bool _enabled = true;
+        private bool _showPanel = true;
+        private int _minTogether = 4;
+        private int _maxRecords = 20;
+
         private double _nextPoll;
         private bool _warnedLayout;
         private bool _warnedNoData;
@@ -64,35 +72,51 @@ namespace TeammateCheckMod
         private bool _savedShowData;
         private bool _savedShowFight;
 
+        private TeamScanner _scanner;
+        private PairPanel _panel;
+        private string _panelSignature;
+
         public override string Name { get { return "对队友进行大调查"; } }
-        public override string Version { get { return "1.0.0"; } }
+        public override string Version { get { return "1.1.0"; } }
         public override string Author { get { return "TenkinMori"; } }
         public override string Description
         {
-            get { return "别人隐藏的资料和战绩，在名片上照样摊开看；纯本地解除显示限制，数据仍以服务端下发为准。"; }
+            get { return "别人隐藏的资料和战绩照样摊开看；开局还会静默比对当前房间每个人的近期战绩，列出疑似组队的组合。"; }
         }
 
         public override void OnInitialize()
         {
             ReadConfig(true);
+            CreateScanner();
+
             Log.Info("配置: enabled=" + _enabled
-                + "，名片窗口字段=" + (WindowField != null)
-                + "，名片数据字段=" + (CareerField != null)
+                + "，minTogether=" + _minTogether
+                + "，maxRecords=" + _maxRecords
+                + "，showPanel=" + _showPanel);
+            Log.Info("字段: 名片窗口=" + (WindowField != null)
+                + "，名片数据=" + (CareerField != null)
                 + "，统计刷新=" + (RefreshStatMethod != null)
                 + "，战绩刷新=" + (RefreshFightMethod != null));
+
             if (WindowField == null || CareerField == null) WarnLayout();
         }
 
         public override void OnConfigChanged()
         {
             ReadConfig(false);
-            if (!_enabled) Restore();
-            Log.Info("配置已更新: enabled=" + _enabled);
+            CreateScanner();
+            if (!_enabled) { Restore(); _panel.Hide(); }
+            Log.Info("配置已更新: enabled=" + _enabled
+                + "，minTogether=" + _minTogether
+                + "，maxRecords=" + _maxRecords
+                + "，showPanel=" + _showPanel);
         }
 
         public override void OnUnload()
         {
             Restore();
+            if (_panel != null) _panel.Hide();
+            if (_scanner != null) _scanner.ClearLobby();
         }
 
         public override void OnUpdate()
@@ -101,13 +125,18 @@ namespace TeammateCheckMod
             if (now < _nextPoll) return;
             _nextPoll = now + PollSeconds;
 
-            try { Tick(); }
-            catch (Exception e) { Log.Warn("巡检失败: " + e.Message); }
+            try { TickCard(); }
+            catch (Exception e) { Log.Warn("名片巡检失败: " + e.Message); }
+
+            try { TickScan(now); }
+            catch (Exception e) { Log.Warn("组队扫描失败: " + e.Message); }
         }
 
-        private void Tick()
+        // ---------------------------------------------------------------- 名片
+
+        private void TickCard()
         {
-            if (!_enabled) return;
+            if (!_enabled) { Restore(); return; }
             if (WindowField == null || CareerField == null) return;
 
             AccountInfoWindow window;
@@ -180,6 +209,23 @@ namespace TeammateCheckMod
             {
                 window = null;
                 career = null;
+                return false;
+            }
+        }
+
+        /// <summary>名片窗口是否正开着——开着时暂停扫描，免得两边抢 playerCareer。</summary>
+        private bool CardWindowOpen()
+        {
+            try
+            {
+                if (WindowField == null || !SimpleSingletonProvider<UIManager>.hasInstance) return false;
+                UIManager ui = SimpleSingletonProvider<UIManager>.inst;
+                if (ui == null) return false;
+                AccountInfoWindow window = WindowField.GetValue(ui) as AccountInfoWindow;
+                return window != null && window.isShowing;
+            }
+            catch
+            {
                 return false;
             }
         }
@@ -258,6 +304,117 @@ namespace TeammateCheckMod
             return (e is TargetInvocationException && e.InnerException != null) ? e.InnerException : e;
         }
 
+        // ------------------------------------------------------------ 组队扫描
+
+        private void CreateScanner()
+        {
+            _scanner = new TeamScanner(_maxRecords, Log.Info, Log.Warn);
+            _scanner.MinTogether = _minTogether;
+            _panelSignature = null;
+            if (_panel == null) _panel = new PairPanel(Log.Warn);
+        }
+
+        private void TickScan(double now)
+        {
+            if (!_enabled)
+            {
+                _scanner.ClearLobby();
+                _panel.Hide();
+                return;
+            }
+
+            RoomInfo room = GetRoom();
+            if (room == null || room.Players == null || room.Players.Count == 0)
+            {
+                _scanner.ClearLobby();
+                _panel.Hide();
+                return;
+            }
+
+            List<long> ids = new List<long>();
+            List<string> names = new List<string>();
+            for (int i = 0; i < room.Players.Count; i++)
+            {
+                RoomPlayer player = room.Players[i];
+                if (player == null || player.serverPlayer == null) continue;
+                if (player.IsBot) continue;
+                if (player.Id <= 100000L) continue;      // NPC / 占位 id
+                ids.Add(player.Id);
+                names.Add(player.GetNick());
+            }
+
+            if (ids.Count < 2)
+            {
+                _scanner.ClearLobby();
+                _panel.Hide();
+                return;
+            }
+
+            _scanner.SetLobby(ids, names);
+            _scanner.Tick(now, CardWindowOpen());
+
+            if (!_scanner.IsDirty) return;
+            _scanner.MarkClean();
+            PushPanel();
+        }
+
+        private static RoomInfo GetRoom()
+        {
+            try
+            {
+                GameLogicManager logic = SimpleSingletonProvider<GameLogicManager>.inst;
+                if (logic == null || logic.room == null) return null;
+                if (!logic.room.IsInRoom) return null;
+                return logic.room.curRoomInfo;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private void PushPanel()
+        {
+            List<PairCount> pairs = _scanner.Pairs();
+            List<string> lines = new List<string>();
+            for (int i = 0; i < pairs.Count && i < 8; i++)
+            {
+                lines.Add(pairs[i].NameA + " ↔ " + pairs[i].NameB + "   " + pairs[i].Count + " 次");
+            }
+
+            string footer = "已扫描 " + _scanner.ScannedPlayers + "/" + _scanner.LobbyCount
+                + " 人 · 命中 " + _scanner.MatchCount + " 场";
+
+            string signature = string.Join("|", lines) + "#" + footer;
+            if (signature == _panelSignature) return;
+            _panelSignature = signature;
+
+            if (!_showPanel)
+            {
+                _panel.Hide();
+                return;
+            }
+
+            bool complete = _scanner.ScannedPlayers >= _scanner.LobbyCount;
+            string placeholder = complete
+                ? "近 " + _maxRecords + " 局里没有重复同场（阈值 " + _minTogether + " 次）。"
+                : "扫描中…（每人 1 次名片查询 + 最多 " + _maxRecords + " 次战绩详情）";
+
+            _panel.Show("疑似组队 · 近 " + _maxRecords + " 局同场", lines, placeholder, footer);
+
+            if (lines.Count > 0)
+            {
+                for (int i = 0; i < lines.Count; i++) Log.Info("疑似组队：" + lines[i]);
+            }
+            else if (complete)
+            {
+                Log.Info("组队统计：当前房间 " + _scanner.LobbyCount + " 人，近 " + _maxRecords
+                    + " 局里同场次数均未达到 " + _minTogether + " 次。");
+            }
+        }
+
+        // ---------------------------------------------------------------- 配置
+
         private void ReadConfig(bool writeDefaults)
         {
             ModConfig cfg = Config;
@@ -266,10 +423,16 @@ namespace TeammateCheckMod
             if (writeDefaults && cfg.Count == 0)
             {
                 cfg.Set("enabled", true);
+                cfg.Set("minTogether", 4);
+                cfg.Set("maxRecords", 20);
+                cfg.Set("showPanel", true);
                 cfg.SaveIfDirty();
             }
 
             _enabled = cfg.GetBool("enabled", true);
+            _showPanel = cfg.GetBool("showPanel", true);
+            _minTogether = Math.Max(2, Math.Min(20, cfg.GetInt("minTogether", 4)));
+            _maxRecords = Math.Max(1, Math.Min(30, cfg.GetInt("maxRecords", 20)));
         }
 
         private void WarnLayout()

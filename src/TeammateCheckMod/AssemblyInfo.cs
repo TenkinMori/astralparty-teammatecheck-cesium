@@ -2,8 +2,8 @@ using CesiumLoader.SDK.Manifests;
 
 [assembly: ModManifest(
     "对队友进行大调查",
-    "1.0.0",
+    "1.1.0",
     "TenkinMori",
-    "别人隐藏的资料和战绩，在名片上照样摊开看；纯本地解除显示限制，数据以服务端下发为准。",
+    "别人隐藏的资料和战绩照样摊开看；开局静默比对当前房间的近期战绩，列出疑似组队的组合。",
     Permissions = ModPermission.ReadGameState | ModPermission.ModifyGameState,
     SdkVersion = "3.8.1")]

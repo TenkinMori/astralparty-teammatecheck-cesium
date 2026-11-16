@@ -1,9 +1,9 @@
 {
   "id": "TeammateCheckMod",
   "name": "对队友进行大调查",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "TenkinMori",
-  "description": "别人隐藏的资料和战绩，在名片上照样摊开看；纯本地解除显示限制，数据仍以服务端下发为准。",
+  "description": "别人隐藏的资料和战绩照样摊开看；开局静默比对当前房间的近期战绩，列出疑似组队的组合。",
   "permissions": 17,
   "sdkVersion": "3.8.1",
   "dependencies": []
