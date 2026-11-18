@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using CesiumLoader.SDK.Configuration;
@@ -81,7 +81,7 @@ namespace TeammateCheckMod
         private string _panelSignature;
 
         public override string Name { get { return "对队友进行大调查"; } }
-        public override string Version { get { return "1.2.1"; } }
+        public override string Version { get { return "1.2.2"; } }
         public override string Author { get { return "TenkinMori"; } }
         public override string Description
         {
@@ -559,20 +559,40 @@ namespace TeammateCheckMod
 
         // ---------------------------------------------------------------- 配置
 
-        private void ReadConfig(bool writeDefaults)
+        private void ReadConfig(bool firstLoad)
         {
             ModConfig cfg = Config;
             if (cfg == null) return;
 
-            if (writeDefaults && cfg.Count == 0)
-            {
-                cfg.Set("enabled", true);
-                cfg.Set("minTogether", 3);
-                cfg.Set("maxRecords", 20);
-                cfg.Set("showPanel", true);
-                cfg.Set("toggleKey", "F9");
-                cfg.SaveIfDirty();
-            }
+            // SetDefault 只补缺失的键，已有配置不会被覆盖；说明写进 _comments，供 Toys 配置界面显示。
+            // 老配置（例如只有 {"enabled": true}）会在这次加载时补齐其余键。
+            bool changed = false;
+            changed |= cfg.SetDefault("enabled", true, ConfigDoc.Of(
+                "是否启用模组。关闭后不扫战绩、不显示面板、也不解除名片隐藏。",
+                "是否啟用模組。關閉後不掃戰績、不顯示面板，也不解除名片隱藏。",
+                "Whether the mod is enabled. Disabling stops scanning, hides panels and leaves profiles untouched.",
+                "モジュールを有効にするか。無効にすると戦績の取得・パネル表示・名刺の解除を行いません。"));
+            changed |= cfg.SetDefault("toggleKey", "F9", ConfigDoc.Of(
+                "隐藏 / 显示所有面板的按键，填 Unity KeyCode 名称：F9、F8、Insert、Home、BackQuote、KeyPad1 等。写 None 可停用热键。",
+                "隱藏 / 顯示所有面板的按鍵，填 Unity KeyCode 名稱：F9、F8、Insert、Home、BackQuote、KeyPad1 等。寫 None 可停用熱鍵。",
+                "Key that hides / shows all panels. Use a Unity KeyCode name: F9, F8, Insert, Home, BackQuote, KeyPad1. Set None to disable.",
+                "すべてのパネルを隠す / 表示するキー。Unity の KeyCode 名（F9、F8、Insert、Home、BackQuote、KeyPad1 など）。None で無効。"));
+            changed |= cfg.SetDefault("showPanel", true, ConfigDoc.Of(
+                "是否默认显示疑似组队面板。false 时只在日志里输出，按热键仍可唤出。",
+                "是否預設顯示疑似組隊面板。false 時只在日誌裡輸出，按熱鍵仍可喚出。",
+                "Whether to show the suspected-team panel by default. When false, results go to the log and the hotkey can still reveal it.",
+                "疑わしいチームのパネルを最初から表示するか。false ならログのみで、ホットキーで呼び出せます。"));
+            changed |= cfg.SetDefault("minTogether", 3, ConfigDoc.Of(
+                "近 N 局里同场累计达到多少次算疑似组队（本局也算一次，范围 2-20）。连续两局同场不受此值限制。",
+                "近 N 局裡同場累計達到多少次算疑似組隊（本局也算一次，範圍 2-20）。連續兩局同場不受此值限制。",
+                "How many shared matches within the recent N games count as a suspected team (current match included, 2-20). Two consecutive matches always qualify.",
+                "直近 N 試合で同席が何回以上なら疑わしいチームとみなすか（今回を含む、2-20）。2 試合連続の同席は常に対象。"));
+            changed |= cfg.SetDefault("maxRecords", 20, ConfigDoc.Of(
+                "每个玩家往回查多少局战绩（范围 1-30）。值越大越准，但请求也越多。",
+                "每個玩家往回查多少局戰績（範圍 1-30）。值越大越準，但請求也越多。",
+                "How many recent matches to scan per player (1-30). Higher is more accurate but sends more requests.",
+                "プレイヤーごとに遡る試合数（1-30）。大きいほど正確ですがリクエストも増えます。"));
+            if (changed || firstLoad) cfg.SaveIfDirty();
 
             _enabled = cfg.GetBool("enabled", true);
             _showPanel = cfg.GetBool("showPanel", true);

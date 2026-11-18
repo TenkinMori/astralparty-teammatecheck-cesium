@@ -52,7 +52,7 @@
   默认 `F9`，可在配置里改
 - 没有命中时面板显示「暂未发现疑似组队」，但仍然可以点开成员列表
 
-配置文件 `AstralParty_ModLoader/configs/TeammateCheckMod.json`（首次启动自动生成）：
+配置文件 `AstralParty_ModLoader/configs/TeammateCheckMod.json`（首次启动自动补齐所有键，带中英日多语言说明；老配置文件里的旧键会保留，缺的键按默认值补上）：
 
 ```json
 {
@@ -60,17 +60,20 @@
   "minTogether": 3,
   "maxRecords": 20,
   "showPanel": true,
-  "toggleKey": "F9"
+  "toggleKey": "F9",
+  "_comments": { "...": "自动生成的多语言说明，可忽略" }
 }
 ```
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 总开关 |
-| `minTogether` | `3` | 同场累计多少次（本局也算一次）算疑似组队；连续两局同场不受此值限制 |
-| `maxRecords` | `20` | 每人往回查多少局 |
-| `showPanel` | `true` | 启动时是否显示面板（关掉后只写日志，F9 仍可唤出） |
+| `minTogether` | `3` | 同场累计多少次（本局也算一次）算疑似组队；连续两局同场不受此值限制（范围 2-20，写超范围会夹回） |
+| `maxRecords` | `20` | 每人往回查多少局（范围 1-30） |
+| `showPanel` | `true` | 启动时是否显示面板（关掉后只写日志，热键仍可唤出） |
 | `toggleKey` | `"F9"` | 隐藏/显示所有面板的快捷键，写 `KeyCode` 名（如 `F9`、`Delete`、`O`）；`None` 表示不用快捷键 |
+
+改完保存即时热重载（约 1 秒内生效），不用重启游戏；`toggleKey`、`showPanel`、`minTogether`、`maxRecords` 都会立刻按新值走。
 
 ## 原理
 
@@ -193,7 +196,7 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 产物：
 
 - `dist/TeammateCheckMod/{TeammateCheckMod.dll,TeammateCheckMod.json,icon.png}`
-- `dist/TeammateCheckMod-1.2.1.zip`
+- `dist/TeammateCheckMod-1.2.2.zip`
 
 `lib/CesiumLoader.SDK.dll` 取自游戏 `AstralParty_ModLoader/sdk`（3.8.1），
 `refs/game` 是当前版本的游戏程序集，仅用于编译引用，不会打进 mod。
@@ -229,6 +232,15 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 - 只处理「看别人的名片」和「当前房间的组队比对」；队伍/结算里的其他展示入口不在本版范围内。
 
 ## 更新日志
+
+### 1.2.2
+
+- 配置改为 `SetDefault` + 多语言 `ConfigDoc` 写法：首次加载补齐**全部**键并写入说明，
+  `_comments` 里自带中/繁/英/日四份解释，Toys 的配置界面能直接显示
+- 老配置文件（例如只有 `{"enabled": true}`）升级后会自动补上 `minTogether` / `maxRecords` /
+  `showPanel` / `toggleKey`，不用手动删文件重建
+- 已有键的值不会被覆盖，改过的 `toggleKey`、`minTogether` 等继续生效
+- 热键解析不变（写错仍然退回 `F9`），改键后即时热重载
 
 ### 1.2.1
 
