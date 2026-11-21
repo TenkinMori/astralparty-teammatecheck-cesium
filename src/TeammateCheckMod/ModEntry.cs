@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Reflection;
 using CesiumLoader.SDK.Configuration;
@@ -62,6 +62,7 @@ namespace TeammateCheckMod
 
         private bool _enabled = true;
         private bool _showPanel = true;
+        private bool _selectOnly = false;
         private int _minTogether = 3;
         private int _maxRecords = 20;
         private KeyCode _toggleKey = KeyCode.F9;
@@ -78,14 +79,15 @@ namespace TeammateCheckMod
 
         private TeamScanner _scanner;
         private ModPanels _panel;
-        private string _panelSignature;
+        private string _panelState;
+        private string _loggedSignature;
 
         public override string Name { get { return "对队友进行大调查"; } }
-        public override string Version { get { return "1.2.2"; } }
+        public override string Version { get { return "1.2.3"; } }
         public override string Author { get { return "TenkinMori"; } }
         public override string Description
         {
-            get { return "别人隐藏的资料和战绩照样摊开看；开局还会静默比对当前房间每个人的近期战绩，列出疑似组队的组合。"; }
+            get { return "别人隐藏的资料和战绩照样摊开看；开局还会静默比对当前房间每个人的近期战绩，把疑似组队的人合并成一组列出。"; }
         }
 
         public override void OnInitialize()
@@ -97,6 +99,7 @@ namespace TeammateCheckMod
                 + "，minTogether=" + _minTogether
                 + "，maxRecords=" + _maxRecords
                 + "，showPanel=" + _showPanel
+                + "，selectOnly=" + _selectOnly
                 + "，toggleKey=" + _toggleKey);
             Log.Info("字段: 名片窗口=" + (WindowField != null)
                 + "，名片数据=" + (CareerField != null)
@@ -115,6 +118,7 @@ namespace TeammateCheckMod
                 + "，minTogether=" + _minTogether
                 + "，maxRecords=" + _maxRecords
                 + "，showPanel=" + _showPanel
+                + "，selectOnly=" + _selectOnly
                 + "，toggleKey=" + _toggleKey);
         }
 
@@ -355,7 +359,8 @@ namespace TeammateCheckMod
         {
             _scanner = new TeamScanner(_maxRecords, Log.Info, Log.Warn);
             _scanner.MinTogether = _minTogether;
-            _panelSignature = null;
+            _panelState = null;
+            _loggedSignature = null;
 
             if (_panel == null)
             {
@@ -404,8 +409,8 @@ namespace TeammateCheckMod
             _scanner.SetLobby(ids, names);
             _scanner.Tick(now, CardWindowOpen());
 
-            // 名片窗口开着时先让开，关掉再回来。
-            _panel.SetSuppressed(CardWindowOpen());
+            // 名片窗口开着、或配置了「只在选人页面显示」而已经离开选人页面时先让开，条件不满足再回来。
+            _panel.SetSuppressed(CardWindowOpen() || !IsPanelSceneAllowed());
 
             if (!_scanner.IsDirty) return;
             _scanner.MarkClean();
@@ -429,35 +434,68 @@ namespace TeammateCheckMod
 
         private void PushPanel()
         {
-            List<PairCount> pairs = _scanner.Pairs();
+            List<TeamGroup> groups = _scanner.Groups();
             List<string> lines = new List<string>();
-            for (int i = 0; i < pairs.Count && i < 8; i++)
+            for (int i = 0; i < groups.Count && i < 8; i++)
             {
-                lines.Add(StripTags(pairs[i].NameA) + " 和 " + StripTags(pairs[i].NameB) + " 疑似组队");
+                lines.Add(JoinNames(groups[i]) + " 疑似组队");
             }
 
             string signature = string.Join("|", lines);
-            if (signature == _panelSignature) return;
-            _panelSignature = signature;
+            bool allowed = IsPanelSceneAllowed();
+            bool visible = _showPanel && allowed && lines.Count > 0;
 
-            bool complete = _scanner.ScannedPlayers >= _scanner.LobbyCount;
-
-            if (!_showPanel || lines.Count == 0)
+            // 显隐状态也要参与去重：面板被藏起来之后，即便内容没变也得重新 Show 一次。
+            string state = (visible ? "1|" : "0|") + signature;
+            if (state != _panelState)
             {
-                _panel.HidePairs();
-            }
-            else
-            {
-                _panel.ShowPairs("疑似组队", lines);
+                _panelState = state;
+                if (visible) _panel.ShowPairs("疑似组队", lines);
+                else _panel.HidePairs();
             }
 
             // 成员列表内容变了（换人 / 名单变）就同步刷新。
             List<MemberRow> members = CollectMembers();
             if (_panel.MembersOpen) _panel.ShowMembers(members);
 
-            // 只在扫完时落一次日志，避免刷屏。
-            if (!complete) return;
+            // 只在扫完、且结果确实变了时落日志，避免刷屏。
+            if (_scanner.ScannedPlayers < _scanner.LobbyCount) return;
+            if (signature == _loggedSignature) return;
+            _loggedSignature = signature;
             for (int i = 0; i < lines.Count; i++) Log.Info(lines[i]);
+        }
+
+        /// <summary>把一组人拼成「A、B、C」，已剥掉 UBB 标记。</summary>
+        private static string JoinNames(TeamGroup group)
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            for (int i = 0; i < group.Names.Count; i++)
+            {
+                if (i > 0) sb.Append('、');
+                sb.Append(StripTags(group.Names[i]));
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 配置了「只在选人页面显示」时，只有房间角色选择面板（RoomHero）才允许出面板；
+        /// 扫描本身不受影响，结果照样进日志。
+        /// </summary>
+        private bool IsPanelSceneAllowed()
+        {
+            if (!_selectOnly) return true;
+
+            try
+            {
+                if (!SimpleSingletonProvider<UIManager>.hasInstance) return false;
+                UIManager ui = SimpleSingletonProvider<UIManager>.inst;
+                if (ui == null || ui.currentPanel == null || ui.currentPanel.config == null) return false;
+                return ui.currentPanel.config.PanelType == UIPanelType.RoomHero;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>当前房间的真人名单（供成员列表面板用）。</summary>
@@ -592,10 +630,16 @@ namespace TeammateCheckMod
                 "每個玩家往回查多少局戰績（範圍 1-30）。值越大越準，但請求也越多。",
                 "How many recent matches to scan per player (1-30). Higher is more accurate but sends more requests.",
                 "プレイヤーごとに遡る試合数（1-30）。大きいほど正確ですがリクエストも増えます。"));
+            changed |= cfg.SetDefault("selectOnly", false, ConfigDoc.Of(
+                "是否只在房间选人页面显示面板。开启后局内不弹面板，结果仍写进日志。",
+                "是否只在房間選人頁面顯示面板。開啟後局內不彈面板，結果仍寫進日誌。",
+                "Only show the panel on the room hero-select screen. When on, mid-game panels stay hidden but results still go to the log.",
+                "ルームのキャラ選択画面でのみパネルを表示する。オンにすると試合中は表示せず、結果はログに残ります。"));
             if (changed || firstLoad) cfg.SaveIfDirty();
 
             _enabled = cfg.GetBool("enabled", true);
             _showPanel = cfg.GetBool("showPanel", true);
+            _selectOnly = cfg.GetBool("selectOnly", false);
             _minTogether = Math.Max(2, Math.Min(20, cfg.GetInt("minTogether", 3)));
             _maxRecords = Math.Max(1, Math.Min(30, cfg.GetInt("maxRecords", 20)));
             _toggleKey = ParseKey(cfg.GetString("toggleKey", "F9"), KeyCode.F9);

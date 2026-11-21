@@ -1,9 +1,9 @@
-﻿{
+{
   "id": "TeammateCheckMod",
   "name": "对队友进行大调查",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "author": "TenkinMori",
-  "description": "别人隐藏的资料和战绩照样摊开看；开局静默比对当前房间的近期战绩，列出疑似组队的组合。",
+  "description": "别人隐藏的资料和战绩照样摊开看；开局静默比对当前房间的近期战绩，把疑似组队的人合并成一组列出。",
   "permissions": 17,
   "sdkVersion": "3.8.1",
   "dependencies": []

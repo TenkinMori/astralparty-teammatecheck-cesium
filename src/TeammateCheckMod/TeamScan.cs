@@ -59,6 +59,15 @@ namespace TeammateCheckMod
         public bool Consecutive;   // 有连续两局同场
     }
 
+    /// <summary>一个疑似组队的「组」：两两命中的人合并成一条，例如 A、B、C 一起组队。</summary>
+    internal sealed class TeamGroup
+    {
+        public readonly List<long> Ids = new List<long>();
+        public readonly List<string> Names = new List<string>();
+        public int Count;          // 组内同场次数最高的那一对
+        public bool Consecutive;   // 组内至少有一对有连场
+    }
+
     /// <summary>
     /// 用 5154（看名片）+ 5155（单场详情）静默重建「谁和谁同场过」。
     ///
@@ -413,6 +422,91 @@ namespace TeammateCheckMod
             }
             result.Sort(delegate(PairCount x, PairCount y) { return y.Count.CompareTo(x.Count); });
             return result;
+        }
+
+        /// <summary>
+        /// 把 Pairs() 的两两结果并成「组」：三个人一起组队时，AB / AC / BC 三对都会被
+        /// 判为疑似组队，这里用并查集把它们合成一条「A、B、C 疑似组队」，避免同一批人
+        /// 重复刷屏。只合并真正命中的对，组与组之间不会因为名单相邻而被牵连。
+        /// </summary>
+        public List<TeamGroup> Groups()
+        {
+            List<PairCount> pairs = Pairs();
+            List<TeamGroup> groups = new List<TeamGroup>();
+            if (pairs.Count == 0) return groups;
+
+            // 并查集：只装出现在命中对里的人。
+            Dictionary<long, long> parent = new Dictionary<long, long>();
+            for (int i = 0; i < pairs.Count; i++)
+            {
+                Union(parent, pairs[i].A, pairs[i].B);
+            }
+
+            // 按根分桶，桶内按名单顺序（= 房间座位顺序）排列。
+            Dictionary<long, TeamGroup> byRoot = new Dictionary<long, TeamGroup>();
+            for (int i = 0; i < _lobby.Count; i++)
+            {
+                long id = _lobby[i];
+                if (!parent.ContainsKey(id)) continue;
+
+                long root = FindRoot(parent, id);
+                TeamGroup group;
+                if (!byRoot.TryGetValue(root, out group))
+                {
+                    group = new TeamGroup();
+                    byRoot[root] = group;
+                }
+                group.Ids.Add(id);
+                group.Names.Add(NameOf(id));
+            }
+
+            // 组的次数取组内最高的一对，连场取组内任意一对。
+            for (int i = 0; i < pairs.Count; i++)
+            {
+                long root = FindRoot(parent, pairs[i].A);
+                TeamGroup group;
+                if (!byRoot.TryGetValue(root, out group)) continue;
+                if (pairs[i].Count > group.Count) group.Count = pairs[i].Count;
+                if (pairs[i].Consecutive) group.Consecutive = true;
+            }
+
+            foreach (KeyValuePair<long, TeamGroup> entry in byRoot)
+            {
+                if (entry.Value.Ids.Count >= 2) groups.Add(entry.Value);
+            }
+
+            groups.Sort(delegate(TeamGroup x, TeamGroup y) { return y.Count.CompareTo(x.Count); });
+            return groups;
+        }
+
+        private static void Union(Dictionary<long, long> parent, long a, long b)
+        {
+            long rootA = FindRoot(parent, a);
+            long rootB = FindRoot(parent, b);
+            if (rootA == rootB) return;
+            parent[rootB] = rootA;
+        }
+
+        private static long FindRoot(Dictionary<long, long> parent, long id)
+        {
+            long root;
+            if (!parent.TryGetValue(id, out root))
+            {
+                parent[id] = id;
+                return id;
+            }
+
+            // 先走到根，再把这一个节点直接挂到根上（单节点路径压缩）。
+            long current = id;
+            while (root != current)
+            {
+                current = root;
+                long next;
+                if (!parent.TryGetValue(current, out next)) break;
+                root = next;
+            }
+            parent[id] = root;
+            return root;
         }
 
         private bool IsTogetherInCurrent(long a, long b)

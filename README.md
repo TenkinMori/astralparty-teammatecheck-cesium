@@ -12,8 +12,9 @@
 
 1. **撕掉名片的遮挡**：对手勾了「隐藏资料」「隐藏战绩」时，照常显示他的统计数据与对局记录。
 2. **开局查组队**：进房间后静默把同房间每个人的近期战绩过一遍，统计两两同场次数
-   （**本局算一次**），累计 ≥3 次、或者出现过**连续两局**同场，就判为疑似组队，
-   在局内右下角弹出小面板，同时写进日志。
+   （**本局算一次**），累计 ≥3 次、或者出现过**连续两局**同场，就判为疑似组队；
+   一起组队的几个人会合并成一组显示（`A、B、C 疑似组队`），不会把两两组合各列一行。
+   面板默认出现在右下角，也可以配置成只在选人页面显示。
 
 - 自己的名片不动：你自己的「隐藏」开关照常生效，别人仍然看不到你隐藏的东西
 - 别人名片关掉后，开关按原值还原，不会污染后续的名片
@@ -36,13 +37,15 @@
 装好即生效，不用按键也能看结果。
 
 - 打开任意玩家名片 → 对方隐藏的资料/战绩会照常显示
-- 进入房间（含联机房间）后：右下角出现「疑似组队」小面板，每行只有一句话，形如
+- 进入房间（含联机房间）后：右下角出现「疑似组队」小面板，每行是一**组**人，形如
 
   ```
   疑似组队
-  小明 和 小红 疑似组队
-  阿强 和 小明 疑似组队
+  小明、小红 疑似组队
+  阿强、小明、小红、小美 疑似组队
   ```
+
+  几个人一起组队时只会出现一条，不会把 `A 和 B` / `A 和 C` / `B 和 C` 各写一行。
 
 - **拖动**：按住面板任意位置就能拖，松手后会自动收回屏幕内（位置会一直保留，不会被重新摆回右下角）
 - **点一下面板**：在旁边展开「房间成员」列表（比主面板窄一些），列出本房间所有真人（自己带「（我）」）；
@@ -60,6 +63,7 @@
   "minTogether": 3,
   "maxRecords": 20,
   "showPanel": true,
+  "selectOnly": false,
   "toggleKey": "F9",
   "_comments": { "...": "自动生成的多语言说明，可忽略" }
 }
@@ -71,9 +75,10 @@
 | `minTogether` | `3` | 同场累计多少次（本局也算一次）算疑似组队；连续两局同场不受此值限制（范围 2-20，写超范围会夹回） |
 | `maxRecords` | `20` | 每人往回查多少局（范围 1-30） |
 | `showPanel` | `true` | 启动时是否显示面板（关掉后只写日志，热键仍可唤出） |
+| `selectOnly` | `false` | 只在房间选人页面显示面板；开启后局内、大厅都不弹面板（扫描照跑，命中仍写日志） |
 | `toggleKey` | `"F9"` | 隐藏/显示所有面板的快捷键，写 `KeyCode` 名（如 `F9`、`Delete`、`O`）；`None` 表示不用快捷键 |
 
-改完保存即时热重载（约 1 秒内生效），不用重启游戏；`toggleKey`、`showPanel`、`minTogether`、`maxRecords` 都会立刻按新值走。
+改完保存即时热重载（约 1 秒内生效），不用重启游戏；上表所有键都会立刻按新值走。
 
 ## 原理
 
@@ -139,7 +144,9 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 3. 对房间里的人两两统计：有多少场对局的参与者同时包含这两个 UID，**再加上本局**这一次；
 4. 连场单独判：某人自己的战绩里**相邻两局**都有对方，或者他的**最近一局**就有对方而这一局又同场
    （两人任一方向成立即可）；
-5. `累计 ≥ minTogether` 或 `有连场` 的组合判定为疑似组队，按次数降序显示（最多显示 8 行）。
+5. `累计 ≥ minTogether` 或 `有连场` 的组合判定为疑似组队；
+6. 把命中的两两组合并成「组」：A、B、C 一起组队时 `AB` / `AC` / `BC` 三对都会命中，
+   用并查集合并后只输出一条 `A、B、C 疑似组队`，按组内最高同场次数降序显示（最多 8 组）。
 
 面板是用 FairyGUI 在代码里搭的（照 `TownTrainer` 的做法）：两个 `opaque = true, draggable = true`
 的 `GComponent` 直接挂到 `GRoot`，各自带 `sortingOrder = 30000`，所以不会被游戏窗口盖住。
@@ -162,6 +169,8 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
   里读结果。服务端回调先于 `RPCAsyncResult.Finish()` 执行，所以 `OnFinished` 里读得到新数据。
 - 5155 用现成的 `AccountLogic.RequestGetPlayerFightRecordC2S(playerId, index)`，它不弹窗。
 - 名片窗口开着时整个扫描暂停（`paused`），两个自绘面板也临时让开，避免两边抢同一个 `playerCareer`。
+- 开了 `selectOnly` 时，只有当前面板是选人页（`UIManager.currentPanel.config.PanelType == UIPanelType.RoomHero`）
+  才出面板；判定走面板类型而不是场景类型，因为大厅、房间、局内都在 `SceneType.Home` 下。
 - 每人一份缓存（30 分钟），换房间/换局时只补查名单里的新面孔；4 人满员时首次约 4×(1+20) 次请求。
 - 点成员列表里的一行，调的是 `AccountLogic.RequestGetShowPlayerC2S(id, nick, lv, headIcon, labelData, null)`
   —— 和游戏自己的 `UICom_RoomPlayer.ShowAccountInfo()` 同一条路子（看自己时按游戏约定传 `0`）。
@@ -174,13 +183,13 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 
 ## 验证
 
-- 启动日志：`配置: enabled=True，minTogether=3，maxRecords=20，showPanel=True，toggleKey=F9`
+- 启动日志：`配置: enabled=True，minTogether=3，maxRecords=20，showPanel=True，selectOnly=False，toggleKey=F9`
   以及 `字段: 名片窗口=True，名片数据=True，统计刷新=True，战绩刷新=True`
 - 打开一个隐藏了资料的玩家名片：`名片：已强制展开对方隐藏内容（统计=有，战绩=N 条，刷新=True/True）`
 - 关掉名片：`名片已关闭：隐藏开关已还原。`
 - 进房间后：面板首显一次 `浮窗已显示（右下角，可拖动，点击展开成员，sortingOrder=30000）。`，
   扫完是 `扫描完成：本人群 4 人，命中 M 场对局记录。`，有命中时逐行
-  `小明 和 小红 疑似组队`
+  `小明、小红 疑似组队` / `阿强、小明、小红、小美 疑似组队`
 - 点面板：`成员列表已收起。`（收起时）；点名单里的人：`正在查看名片：<昵称>`
 - 按 F9：`面板已隐藏（F9 再按一次显示）。` / `面板已显示（F9 再按一次隐藏）。`
 - 若出现 `服务端没有下发数据`，说明该玩家名下数据确实被服务端裁掉（端上无权可解）。
@@ -196,7 +205,7 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 产物：
 
 - `dist/TeammateCheckMod/{TeammateCheckMod.dll,TeammateCheckMod.json,icon.png}`
-- `dist/TeammateCheckMod-1.2.2.zip`
+- `dist/TeammateCheckMod-1.2.3.zip`
 
 `lib/CesiumLoader.SDK.dll` 取自游戏 `AstralParty_ModLoader/sdk`（3.8.1），
 `refs/game` 是当前版本的游戏程序集，仅用于编译引用，不会打进 mod。
@@ -232,6 +241,17 @@ else { list_FightData.visible = false; txt_FightDataTip.text = 1035.GetLocal(...
 - 只处理「看别人的名片」和「当前房间的组队比对」；队伍/结算里的其他展示入口不在本版范围内。
 
 ## 更新日志
+
+### 1.2.3
+
+- 疑似组队改为**按组显示**：A、B、C 三个人一起组队时，以前会写成
+  `A 和 B` / `A 和 C` / `B 和 C` 三条，现在合并成一条 `A、B、C 疑似组队`
+  （用并查集把命中的两两关系合起来；两拨互不相干的人仍然是分开的两条）
+- 每个玩家再多一层「单人组」排除：只和某个不够阈值的人同过场，不会把这人拉进组里
+- 新增配置 `selectOnly`（默认 `false`）：只在**房间选人页面**显示面板。
+  开启后局内、大厅都不弹面板，但扫描照跑、命中照写日志
+- 选人页判定用 `UIManager.currentPanel.config.PanelType == UIPanelType.RoomHero`，
+  而不是场景类型——大厅、房间、局内都在 `SceneType.Home` 下，看场景分不出来
 
 ### 1.2.2
 
